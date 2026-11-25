@@ -1,0 +1,7 @@
+project_id = "atrativa"
+
+[functions.send-chat-message]
+verify_jwt = true
+
+[functions.whatsapp-webhook]
+verify_jwt = false
