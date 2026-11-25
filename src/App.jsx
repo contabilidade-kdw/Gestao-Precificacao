@@ -277,7 +277,7 @@ function App() {
   const sharedProps = { products, expenses, quotes, sales, movements, profiles, auditLogs, profile, user, onRun: run, dreReports, activeDreReport, activeDreReportId };
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="sidebar-brand"><div className="brand-mark small sidebar-logo"><img src={`${import.meta.env.BASE_URL}atrativa-logo.jpeg`} alt="Logo Atrativa" /></div><div><strong>Atrativa</strong><small>GESTÃO & PRECIFICAÇÃO</small></div></div>
+    
       <div className="nav-caption">MENU PRINCIPAL</div>
       <nav>{visibleScreens.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${screen === id ? 'selected' : ''}`} onClick={() => setScreen(id)}><Icon size={18} /><span>{label}</span>{id === 'orcamentos' && quotes.filter((quote) => quote.status !== 'effective').length > 0 && <span className="nav-count">{quotes.filter((quote) => quote.status !== 'effective').length}</span>}</button>)}</nav>
       <div className="sidebar-bottom"><div className="user-chip"><div className="avatar">{(profile.name || user.email || 'U').charAt(0).toUpperCase()}</div><div className="user-details"><strong>{profile.name || user.email}</strong><small>{profile.role === 'admin' ? 'Administrador' : profile.role === 'analyst' ? 'Analista' : 'Usuário autorizado'}</small></div><button className="icon-button logout" title="Sair" onClick={logout}><LogOut size={17} /></button></div></div>
