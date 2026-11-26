@@ -18,3 +18,13 @@
 .profile-readonly-info{display:grid;gap:6px;padding:12px;border-radius:7px;background:#f7f9fc;color:#52617a;font-size:10px}.profile-readonly-info small{color:#929baa;font-size:9px}
 .stock-action-buttons{flex-wrap:wrap}
 .chat-internal-note{margin:14px 0}
+.quote-actions{display:flex;flex-wrap:wrap;gap:6px;min-width:220px}
+.chat-nav-unread-dot,.chat-unread-dot,.chat-presence-dot{display:block;width:9px;height:9px;border-radius:50%;flex:none}
+.chat-nav-unread-dot,.chat-unread-dot{background:#ee9b32}
+.chat-nav-unread-dot{margin-left:7px;box-shadow:0 0 0 2px #172b4d}
+.chat-unread-dot{box-shadow:0 0 0 2px #fff}
+.chat-contact-avatar,.chat-thread-avatar{position:relative;display:block;flex:none}
+.chat-presence-dot{position:absolute;right:0;bottom:0;border:2px solid #fff;background:#3bb77a;width:11px;height:11px}
+.chat-contact-text{flex:1}
+.chat-online-label{color:#38966d!important}
+.nav-item .chat-nav-unread-dot{display:block}

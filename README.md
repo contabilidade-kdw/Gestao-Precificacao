@@ -57,7 +57,7 @@ supabase link --project-ref SEU_PROJECT_REF
 supabase db push
 ```
 
-`supabase db push` aplica `supabase/migrations/20261125102500_initial_schema.sql`. A migração cria:
+`supabase db push` aplica as migrações pendentes em `supabase/migrations/`. A migração inicial cria:
 
 - perfis ligados ao Supabase Auth, com cadastro pendente por padrão;
 - registros de produtos, despesas, orçamentos, vendas, estoque, DRE, auditoria e chat em Postgres;
@@ -160,6 +160,13 @@ O app anterior estava em modo de demonstração e não havia um projeto Firebase
 - O custo direto soma compra/matéria-prima, mão de obra, embalagem e outros custos diretos.
 - Despesas indiretas mensais habilitadas são rateadas proporcionalmente ao custo direto multiplicado pelo volume mensal.
 - O preço sugerido é o custo completo multiplicado por `1 + margem / 100`.
-- Um orçamento só aparece como venda quando efetivado; essa ação verifica e baixa o estoque numa transação no Postgres.
+- Um orçamento precisa ser aprovado antes da venda; orçamentos vencidos não podem ser aprovados nem registrados. Registrar a venda verifica e baixa o estoque numa transação no Postgres.
+- Orçamentos pendentes podem ser recusados; os recusados podem gerar uma nova versão pendente, preservando o registro anterior, ou ser excluídos. Somente orçamentos recusados podem ser excluídos.
+- O desconto do orçamento reduz o preço unitário e o total; a venda registra o valor líquido e conserva o percentual/valor do desconto.
+- O preço sugerido é calculado por custo completo + margem, pode ser editado antes de salvar e fica registrado no orçamento. Pix é sempre à vista; Cartão e Boleto aceitam de 1 a 12 parcelas.
+- Após a aprovação, o orçamento pode ser exportado como PDF; orçamentos já convertidos em venda também mantêm essa opção.
+- A validade é calculada a partir da data de cadastro, com opções de 7, 15, 30 ou 60 dias. Preparar e-mail abre uma mensagem preenchida no aplicativo de e-mail do usuário; o envio depende da confirmação nesse aplicativo.
+- O resumo do orçamento pode ser enviado a um membro autorizado pelo chat interno, onde fica gravado junto à conversa.
+- O chat sinaliza mensagens não lidas no menu e na conversa. A presença online é sincronizada pelo Supabase Realtime; o modo demonstração não simula presença entre usuários.
 - Venda abaixo do custo exige justificativa com pelo menos 10 caracteres, consultável no painel de gestão.
 - O administrador acessa todas as telas; os demais perfis acessam apenas as telas autorizadas.

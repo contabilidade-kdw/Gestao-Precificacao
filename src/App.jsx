@@ -1,15 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  addDoc, adjustProductStock, authenticateDemo, collection, deleteDoc, doc, finalizeQuoteSale, getDemoAdmin, getDoc,
-  importStockBatch, listChatContacts, listHistoryActors, listProfiles, onSnapshot, query, resetDemoData,
-  sendChatMessage, where, writeBatch,
+  addDoc, adjustProductStock, approveQuote, authenticateDemo, collection, deleteDoc, deleteRejectedQuote, doc, finalizeQuoteSale, getDemoAdmin, getDoc,
+  importStockBatch, isQuoteExpired, listChatContacts, listHistoryActors, listProfiles, onSnapshot, query, resetDemoData,
+  rejectQuote, sendChatMessage, where, writeBatch,
   serverTimestamp, setDoc, updateDoc,
 } from './data.js';
 import {
   Activity, ArrowDownToLine, ArrowUpFromLine, BadgeDollarSign, Boxes,
-  Check, CheckCheck, ChevronDown, CircleDollarSign, ClipboardList, Download, FileText,
-  History, LayoutDashboard, LogOut, MessageCircle, Package, Pencil, Plus, Search, Send, ShieldCheck,
-  ShoppingCart, Tag, Upload, Users, X,
+  Ban, Check, CheckCheck, ChevronDown, CircleDollarSign, ClipboardList, Download, FileText,
+  History, LayoutDashboard, LogOut, Mail, MessageCircle, Package, Pencil, Plus, Search, Send, ShieldCheck,
+  RotateCcw, ShoppingCart, Tag, Trash2, Upload, Users, X,
 } from 'lucide-react';
 import { db, demoMode, supabase, supabaseConfigured } from './supabase.js';
 import { parseErpStockFile, parseStockFile, planStockImport } from './stockImport.js';
@@ -33,6 +33,13 @@ const dateLabel = (value) => {
   const date = value ? new Date(value) : null;
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString('pt-BR') : '—';
 };
+const dateOnlyValue = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const dateOnlyLabel = (value) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ''));
+  if (!match) return dateLabel(value);
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString('pt-BR');
+};
+const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const uid = () => Math.random().toString(36).slice(2, 10);
 const asNumber = (value) => Number.parseFloat(value) || 0;
 const normalizePhone = (value) => String(value || '').replace(/\D/g, '');
@@ -145,6 +152,8 @@ function App() {
   const [sales, setSales] = useState([]);
   const [movements, setMovements] = useState([]);
   const [profiles, setProfiles] = useState([]);
+  const [unreadMessages, setUnreadMessages] = useState([]);
+  const [onlineUserIds, setOnlineUserIds] = useState([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -219,6 +228,65 @@ function App() {
     return () => { active = false; };
   }, [user, profile, screen]);
 
+  useEffect(() => {
+    const canUseChat = profile?.role === 'admin' || profile?.permissions?.includes('chat');
+    if (!user || !profile?.active || !canUseChat) {
+      setUnreadMessages([]);
+      return undefined;
+    }
+    return onSnapshot(
+      query(collection(db, 'chatMessages'), where('recipientId', '==', user.uid)),
+      (snapshot) => setUnreadMessages(snapshot.docs
+        .map((item) => ({ id: item.id, ...item.data() }))
+        .filter((message) => !message.readAt)),
+      (issue) => setError(userError(issue)),
+    );
+  }, [user?.uid, profile?.active, profile?.role, profile?.permissions]);
+
+  useEffect(() => {
+    const canUseChat = profile?.role === 'admin' || profile?.permissions?.includes('chat');
+    if (!user || !profile?.active || !canUseChat || !supabase || demoMode) {
+      setOnlineUserIds([]);
+      return undefined;
+    }
+
+    let active = true;
+    const channel = supabase.channel('app-presence', {
+      config: { presence: { key: user.uid } },
+    });
+    const updateOnlineUsers = () => {
+      const onlineIds = new Set();
+      Object.values(channel.presenceState()).forEach((presences) => {
+        presences.forEach((presence) => {
+          if (typeof presence.userId === 'string') onlineIds.add(presence.userId);
+        });
+      });
+      if (active) setOnlineUserIds(Array.from(onlineIds));
+    };
+
+    channel
+      .on('presence', { event: 'sync' }, updateOnlineUsers)
+      .subscribe((status, issue) => {
+        if (!active) return;
+        if (status === 'SUBSCRIBED') {
+          channel.track({ userId: user.uid }).then((trackingStatus) => {
+            if (active && trackingStatus !== 'ok') {
+              setError(userError(new Error(`Não foi possível registrar sua presença (${trackingStatus}).`)));
+            }
+          }).catch((trackingError) => {
+            if (active) setError(userError(trackingError));
+          });
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setError(userError(issue || new Error(`Não foi possível sincronizar a presença (${status}).`)));
+        }
+      });
+
+    return () => {
+      active = false;
+      void supabase.removeChannel(channel);
+    };
+  }, [user?.uid, profile?.active, profile?.role, profile?.permissions]);
+
   const allowed = useMemo(() => profile?.role === 'admin' ? screens.map((item) => item.id) : profile?.active ? profile.permissions || [] : [], [profile]);
   const visibleScreens = screens.filter((item) => allowed.includes(item.id));
   useEffect(() => {
@@ -274,12 +342,12 @@ function App() {
   }
   const activeDreReportId = dreSettings.find((item) => item.id === 'active')?.reportId || '';
   const activeDreReport = dreReports.find((item) => item.id === activeDreReportId) || null;
-  const sharedProps = { products, expenses, quotes, sales, movements, profiles, auditLogs, profile, user, onRun: run, dreReports, activeDreReport, activeDreReportId };
+  const sharedProps = { products, expenses, quotes, sales, movements, profiles, auditLogs, profile, user, onRun: run, dreReports, activeDreReport, activeDreReportId, unreadMessages, onlineUserIds };
   return <div className="app-shell">
     <aside className="sidebar">
     
       <div className="nav-caption">MENU PRINCIPAL</div>
-      <nav>{visibleScreens.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${screen === id ? 'selected' : ''}`} onClick={() => setScreen(id)}><Icon size={18} /><span>{label}</span>{id === 'orcamentos' && quotes.filter((quote) => quote.status !== 'effective').length > 0 && <span className="nav-count">{quotes.filter((quote) => quote.status !== 'effective').length}</span>}</button>)}</nav>
+      <nav>{visibleScreens.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${screen === id ? 'selected' : ''}`} onClick={() => setScreen(id)}><Icon size={18} /><span>{label}</span>{id === 'orcamentos' && quotes.filter((quote) => quote.status !== 'effective').length > 0 && <span className="nav-count">{quotes.filter((quote) => quote.status !== 'effective').length}</span>}{id === 'chat' && unreadMessages.length > 0 && <span className="chat-nav-unread-dot" role="img" aria-label="Mensagens não lidas" title="Mensagens não lidas" />}</button>)}</nav>
       <div className="sidebar-bottom"><div className="user-chip"><div className="avatar">{(profile.name || user.email || 'U').charAt(0).toUpperCase()}</div><div className="user-details"><strong>{profile.name || user.email}</strong><small>{profile.role === 'admin' ? 'Administrador' : profile.role === 'analyst' ? 'Analista' : 'Usuário autorizado'}</small></div><button className="icon-button logout" title="Sair" onClick={logout}><LogOut size={17} /></button></div></div>
     </aside>
     <main className="main-area"><header className="topbar"><div><p className="breadcrumb">Atrativa <span>/</span> {currentScreen?.label}</p><h1>{currentScreen?.label}</h1></div><div className="topbar-meta"><span className="live-dot" />{demoMode ? 'Demonstração local' : 'Dados sincronizados'}<ChevronDown size={15} /></div></header>
@@ -307,7 +375,7 @@ function Dashboard({ products, expenses, quotes, sales, activeDreReport }) {
   const stockValue = products.reduce((sum, product) => sum + (Number(product.stock) || 0) * productCost(product, products, expenses, activeDreReport), 0);
   const totalSold = sales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0);
   const effective = quotes.filter((quote) => quote.status === 'effective').length;
-  const pending = quotes.filter((quote) => quote.status !== 'effective').length;
+  const pending = quotes.filter((quote) => ['pending', 'approved'].includes(quote.status)).length;
   const metrics = [
     { title: 'Valor em estoque', value: money(stockValue), hint: `${products.reduce((sum, item) => sum + (Number(item.stock) || 0), 0)} unidades disponíveis`, icon: Boxes, tone: 'blue' },
     { title: 'Vendas realizadas', value: money(totalSold), hint: `${sales.length} itens vendidos`, icon: CircleDollarSign, tone: 'green' },
@@ -362,7 +430,7 @@ function HistoryPage({ auditLogs, movements, quotes, sales, profiles }) {
       id: `quote-${item.id}`, createdAt: item.createdAt,
       actorId: item.createdBy, actorName: item.createdByName || profileNames.get(item.createdBy) || '',
       type: 'Orçamento',
-      summary: `Orçamento criado para ${item.customer} · ${item.quantity} un. de ${item.productName} · ${item.status === 'effective' ? 'efetivado' : 'em aberto'}`,
+      summary: `Orçamento criado para ${item.customer} · ${item.quantity} un. de ${item.productName} · ${item.status === 'effective' ? 'venda registrada' : item.status === 'approved' ? 'aprovado' : item.status === 'rejected' ? 'recusado' : 'em aberto'}`,
     })),
     ...(sales || []).map((item) => ({
       id: `sale-${item.id}`, createdAt: item.createdAt,
@@ -409,7 +477,7 @@ function canChat(person) {
   return person?.active === true && (person.role === 'admin' || person.permissions?.includes('chat'));
 }
 
-function ChatPage({ profiles, profile, user, onRun }) {
+function ChatPage({ profiles, profile, user, onRun, unreadMessages, onlineUserIds }) {
   const [contacts, setContacts] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [messages, setMessages] = useState([]);
@@ -420,6 +488,7 @@ function ChatPage({ profiles, profile, user, onRun }) {
   const [sending, setSending] = useState(false);
   const bottomRef = useRef(null);
   const selectedContact = contacts.find((contact) => contact.id === selectedContactId) || null;
+  const selectedContactOnline = selectedContact ? onlineUserIds.includes(selectedContact.id) : false;
   const currentConversationId = selectedContact ? chatConversationId(user.uid, selectedContact.id) : '';
 
   useEffect(() => {
@@ -474,27 +543,13 @@ function ChatPage({ profiles, profile, user, onRun }) {
     const messageRef = doc(collection(db, 'chatMessages'));
     const conversationId = chatConversationId(user.uid, selectedContact.id);
     const succeeded = await onRun(async () => {
-      if (demoMode) {
-        const batch = writeBatch(db);
-        const sentAt = serverTimestamp();
-        batch.set(doc(db, 'chatConversations', conversationId), {
-          participants: [user.uid, selectedContact.id].sort(),
-          lastMessage: text,
-          lastMessageAt: sentAt,
-          lastSenderId: user.uid,
-        });
-        batch.set(messageRef, {
-          conversationId, senderId: user.uid, senderName: profile.name || user.email,
-          recipientId: selectedContact.id, text, createdAt: sentAt,
-        });
-        await batch.commit();
-      } else {
-        await sendChatMessage({
-          recipientId: selectedContact.id,
-          text,
-          messageId: messageRef.id,
-        });
-      }
+      await sendChatMessage({
+        senderId: user.uid,
+        senderName: profile.name || user.email,
+        recipientId: selectedContact.id,
+        text,
+        messageId: messageRef.id,
+      });
     }, undefined, {
       action: 'send', entity: 'chat', entityId: conversationId, sourceScreen: 'chat',
       summary: `Enviou uma mensagem para ${selectedContact.name}.`,
@@ -518,14 +573,18 @@ function ChatPage({ profiles, profile, user, onRun }) {
         <div className="chat-contact-list">{contacts.map((contact) => {
           const conversationId = chatConversationId(user.uid, contact.id);
           const conversation = conversations.find((item) => item.id === conversationId);
+          const hasUnread = unreadMessages.some((message) => message.senderId === contact.id);
+          const isOnline = onlineUserIds.includes(contact.id);
           return <button key={contact.id} className={`chat-contact ${selectedContactId === contact.id ? 'selected' : ''}`} onClick={() => setSelectedContactId(contact.id)}>
-            <span className="avatar">{contact.name.charAt(0).toUpperCase()}</span><span className="chat-contact-text"><strong>{contact.name}</strong><small>{conversation?.lastMessage || 'Iniciar conversa'}</small></span>
+            <span className="chat-contact-avatar"><span className="avatar">{contact.name.charAt(0).toUpperCase()}</span>{isOnline && <span className="chat-presence-dot" role="img" aria-label="Online" title="Online" />}</span>
+            <span className="chat-contact-text"><strong>{contact.name}</strong><small>{conversation?.lastMessage || 'Iniciar conversa'}</small></span>
+            {hasUnread && <span className="chat-unread-dot" role="img" aria-label="Mensagem não lida" title="Mensagem não lida" />}
           </button>;
         })}{!contacts.length && <div className="empty-state"><Users size={24} /><p>Nenhum usuário autorizado ao chat.</p></div>}</div>
       </aside>
       <section className="panel chat-thread">
         {selectedContact ? <>
-          <header className="chat-thread-header"><div className="avatar">{selectedContact.name.charAt(0).toUpperCase()}</div><div><strong>{selectedContact.name}</strong><small>{selectedConversation ? 'Conversa individual' : 'Nova conversa'}</small></div></header>
+          <header className="chat-thread-header"><span className="chat-thread-avatar"><span className="avatar">{selectedContact.name.charAt(0).toUpperCase()}</span>{selectedContactOnline && <span className="chat-presence-dot" role="img" aria-label="Online" title="Online" />}</span><div><strong>{selectedContact.name}</strong><small className={selectedContactOnline ? 'chat-online-label' : ''}>{selectedContactOnline ? 'Online' : selectedConversation ? 'Conversa individual' : 'Nova conversa'}</small></div></header>
           <div className="chat-message-list">{messages.map((message) => {
             const ownMessage = message.senderId === user.uid;
             return <article className={`chat-message ${ownMessage ? 'own' : ''}`} key={message.id}>
@@ -926,35 +985,184 @@ function StockPage({ products, expenses, movements, onRun, user, profile, active
   </>;
 }
 
-function QuotesPage({ products, expenses, quotes, onRun, user, profile, activeDreReport }) {
+function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile, activeDreReport }) {
   const [modal, setModal] = useState(false);
-  const [approvalQuote, setApprovalQuote] = useState(null);
+  const [revisionQuote, setRevisionQuote] = useState(null);
+  const [quoteDraft, setQuoteDraft] = useState({
+    customer: '', customerEmail: '', productId: '', quantity: '1', margin: '30',
+    unitPrice: '', discountPercent: '0', validityDays: '30', paymentMethod: 'Pix', installments: '1',
+  });
+  const [belowCostQuote, setBelowCostQuote] = useState(null);
+  const [shareQuote, setShareQuote] = useState(null);
+  const [shareContacts, setShareContacts] = useState([]);
+  const [shareRecipientId, setShareRecipientId] = useState('');
+  const [shareText, setShareText] = useState('');
+  const [shareError, setShareError] = useState('');
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [sharing, setSharing] = useState(false);
+
+  function openQuoteForm(quote = null) {
+    setRevisionQuote(quote);
+    if (quote) {
+      const installments = Number(quote.installmentCount)
+        || Number(String(quote.paymentTerms || '').match(/\d+/)?.[0])
+        || 1;
+      setQuoteDraft({
+        customer: quote.customer || '',
+        customerEmail: quote.customerEmail || '',
+        productId: quote.productId || '',
+        quantity: String(quote.quantity || 1),
+        margin: String(quote.margin ?? 30),
+        unitPrice: String(quote.listUnitPrice ?? quote.unitPrice ?? ''),
+        discountPercent: String(quote.discountPercent || 0),
+        validityDays: String(quote.validityDays || 30),
+        paymentMethod: ['Pix', 'Cartão', 'Boleto'].includes(quote.paymentMethod) ? quote.paymentMethod : 'Pix',
+        installments: String(Math.min(12, Math.max(1, installments))),
+      });
+    } else {
+      setQuoteDraft({
+        customer: '', customerEmail: '', productId: '', quantity: '1', margin: '30',
+        unitPrice: '', discountPercent: '0', validityDays: '30', paymentMethod: 'Pix', installments: '1',
+      });
+    }
+    setModal(true);
+  }
+
+  function updateQuoteDraft(field, value) {
+    setQuoteDraft((current) => {
+      if (field === 'productId' || field === 'margin') {
+        const productId = field === 'productId' ? value : current.productId;
+        const margin = field === 'margin' ? asNumber(value) : asNumber(current.margin);
+        const product = products.find((item) => item.id === productId);
+        const unitCost = product ? productCost(product, products, expenses, activeDreReport) : 0;
+        return {
+          ...current,
+          [field]: value,
+          unitPrice: product ? String(roundMoney(unitCost * (1 + margin / 100))) : '',
+        };
+      }
+      return { ...current, [field]: value };
+    });
+  }
+
   async function saveQuote(event) {
-    event.preventDefault(); const data = new FormData(event.currentTarget);
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
     const product = products.find((item) => item.id === data.get('productId'));
     if (!product) return;
-    const quantity = asNumber(data.get('quantity')); const margin = asNumber(data.get('margin'));
+
+    const quantity = asNumber(data.get('quantity'));
+    const margin = asNumber(data.get('margin'));
+    const discountPercent = asNumber(data.get('discountPercent'));
+    const validityDays = asNumber(data.get('validityDays'));
     const unitCost = productCost(product, products, expenses, activeDreReport);
     const suggestedPrice = unitCost * (1 + margin / 100);
     const customPrice = String(data.get('unitPrice') || '').trim();
-    const unitPrice = customPrice === '' ? suggestedPrice : asNumber(customPrice);
-    const customer = String(data.get('customer')).trim();
-    await onRun(async () => { await addDoc(collection(db, 'quotes'), { customer, productId: product.id, productName: product.name, quantity, unitCost, unitPrice, margin, total: quantity * unitPrice, status: 'pending', createdBy: user.uid, createdByName: profile?.name || user.email, createdAt: serverTimestamp() }); setModal(false); });
+    const listUnitPrice = roundMoney(customPrice === '' ? suggestedPrice : asNumber(customPrice));
+    const unitPrice = roundMoney(listUnitPrice * (1 - discountPercent / 100));
+    const subtotal = roundMoney(quantity * listUnitPrice);
+    const total = roundMoney(quantity * unitPrice);
+    const createdAt = new Date();
+    const validUntilDate = new Date(createdAt);
+    validUntilDate.setDate(validUntilDate.getDate() + validityDays);
+    const paymentMethod = String(data.get('paymentMethod') || '');
+    const installmentCount = paymentMethod === 'Pix' ? 1 : asNumber(data.get('installments'));
+    const quote = {
+      customer: String(data.get('customer')).trim(),
+      customerEmail: String(data.get('customerEmail') || '').trim(),
+      productId: product.id,
+      productName: product.name,
+      quantity,
+      unitCost,
+      listUnitPrice,
+      unitPrice,
+      margin,
+      discountPercent,
+      discountAmount: roundMoney(subtotal - total),
+      subtotal,
+      total,
+      suggestedUnitPrice: roundMoney(suggestedPrice),
+      paymentMethod,
+      installmentCount,
+      paymentTerms: paymentMethod === 'Pix'
+        ? 'À vista'
+        : `${installmentCount} ${installmentCount === 1 ? 'parcela' : 'parcelas'}`,
+      validityDays,
+      validUntil: dateOnlyValue(validUntilDate),
+      status: 'pending',
+      createdBy: user.uid,
+      createdByName: profile?.name || user.email,
+      createdAt: createdAt.toISOString(),
+      ...(revisionQuote
+        ? { revisionOf: revisionQuote.id, revisionNumber: (Number(revisionQuote.revisionNumber) || 1) + 1 }
+        : { revisionNumber: 1 }),
+    };
+    await onRun(async () => {
+      await addDoc(collection(db, 'quotes'), quote);
+      setModal(false);
+      setRevisionQuote(null);
+    });
   }
+
+  async function approveQuoteItem(quote) {
+    await onRun(() => approveQuote(
+      quote,
+      user.uid,
+      profile?.name || user.email,
+    ), undefined, {
+      action: 'approve',
+      entity: 'quote',
+      entityId: quote.id,
+      sourceScreen: 'orcamentos',
+      summary: `Aprovou o orçamento de ${quote.customer} para ${quote.productName}.`,
+    });
+  }
+
+  async function rejectQuoteItem(quote) {
+    if (!window.confirm(`Recusar o orçamento de ${quote.customer}? Ele continuará no histórico e poderá ser revisado depois.`)) return;
+    await onRun(() => rejectQuote(quote, user.uid, profile?.name || user.email), undefined, {
+      action: 'reject',
+      entity: 'quote',
+      entityId: quote.id,
+      sourceScreen: 'orcamentos',
+      summary: `Recusou o orçamento de ${quote.customer} para ${quote.productName}.`,
+    });
+  }
+
+  async function removeRejectedQuote(quote) {
+    if (!window.confirm(`Excluir permanentemente o orçamento recusado de ${quote.customer}?`)) return;
+    await onRun(() => deleteRejectedQuote(quote.id), undefined, {
+      action: 'delete',
+      entity: 'quote',
+      entityId: quote.id,
+      sourceScreen: 'orcamentos',
+      summary: `Excluiu o orçamento recusado de ${quote.customer} para ${quote.productName}.`,
+    });
+  }
+
   async function concludeQuote(quote) {
+    if (isQuoteExpired(quote)) {
+      await onRun(async () => { throw new Error('O orçamento venceu e não pode ser registrado como venda.'); });
+      return;
+    }
     if (Number(quote.unitPrice) < Number(quote.unitCost)) {
-      setApprovalQuote(quote);
+      setBelowCostQuote(quote);
       return;
     }
     await finalizeQuote(quote, '');
   }
+
   async function authorizeBelowCost(event) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    if (await finalizeQuote(approvalQuote, String(data.get('justification')).trim())) setApprovalQuote(null);
+    if (await finalizeQuote(belowCostQuote, String(data.get('justification')).trim())) setBelowCostQuote(null);
   }
+
   async function finalizeQuote(quote, justification) {
     if (!quote) return false;
+    if (isQuoteExpired(quote)) {
+      return onRun(async () => { throw new Error('O orçamento venceu e não pode ser registrado como venda.'); });
+    }
     if (Number(quote.unitPrice) < Number(quote.unitCost) && justification.length < 10) {
       return onRun(async () => { throw new Error('Justificativa obrigatória: informe pelo menos 10 caracteres para liberar esta venda.'); });
     }
@@ -963,14 +1171,263 @@ function QuotesPage({ products, expenses, quotes, onRun, user, profile, activeDr
       justification,
       user.uid,
       profile?.name || user.email,
-    ));
+    ), undefined, {
+      action: 'finalize',
+      entity: 'quote',
+      entityId: quote.id,
+      sourceScreen: 'orcamentos',
+      summary: `Registrou a venda do orçamento de ${quote.customer} para ${quote.productName}.`,
+    });
   }
+
+  function emailQuote(quote) {
+    const body = [
+      `Orçamento para ${quote.customer}`,
+      `Produto: ${quote.productName}`,
+      `Quantidade: ${quote.quantity}`,
+      `Preço unitário: ${money(quote.unitPrice)}`,
+      `Desconto: ${Number(quote.discountPercent) || 0}% (${money(quote.discountAmount)})`,
+      `Total: ${money(quote.total)}`,
+      `Forma de pagamento: ${quote.paymentMethod || 'A combinar'}`,
+      `Condição de pagamento: ${quote.paymentTerms || 'A combinar'}`,
+      `Data do orçamento: ${dateLabel(quote.createdAt)}`,
+      `Válido até: ${dateOnlyLabel(quote.validUntil)}`,
+    ].join('\n');
+    const subject = `Orçamento para ${quote.customer}`;
+    window.location.href = `mailto:${encodeURIComponent(quote.customerEmail || '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
+
+  async function exportQuotePdf(quote) {
+    await onRun(async () => {
+      const { jsPDF } = await import('jspdf');
+      const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 18;
+      const contentWidth = pageWidth - margin * 2;
+      let y = 24;
+
+      pdf.setProperties({ title: `Orçamento - ${quote.customer}`, author: 'Atrativa' });
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(20);
+      pdf.text('ATRATIVA', margin, y);
+      pdf.setFontSize(12);
+      pdf.text('ORÇAMENTO', pageWidth - margin, y, { align: 'right' });
+      y += 7;
+      pdf.setDrawColor(220, 226, 236);
+      pdf.line(margin, y, pageWidth - margin, y);
+      y += 12;
+
+      const addField = (label, value) => {
+        const labelText = `${label}:`;
+        const valueLines = pdf.splitTextToSize(String(value || '—'), contentWidth - 30);
+        pdf.setFontSize(9);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(labelText, margin, y);
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(valueLines, margin + 30, y);
+        y += Math.max(5, valueLines.length * 5) + 3;
+        if (y > pageHeight - margin - 10) {
+          pdf.addPage();
+          y = margin;
+        }
+      };
+
+      addField('Cliente', quote.customer);
+      if (quote.customerEmail) addField('E-mail', quote.customerEmail);
+      addField('Data do orçamento', dateLabel(quote.createdAt));
+      addField('Válido até', dateOnlyLabel(quote.validUntil));
+      addField('Forma de pagamento', quote.paymentMethod || 'A combinar');
+      addField('Condição de pagamento', quote.paymentTerms || 'A combinar');
+
+      y += 3;
+      const columns = [
+        { label: 'Produto', width: 64 },
+        { label: 'Qtd.', width: 16 },
+        { label: 'Preço unit.', width: 30 },
+        { label: 'Desconto', width: 33 },
+        { label: 'Total', width: 31 },
+      ];
+      const rowValues = [
+        quote.productName,
+        String(quote.quantity),
+        money(quote.unitPrice).replace(/\u00a0/g, ' '),
+        `${Number(quote.discountPercent) || 0}% (${money(quote.discountAmount).replace(/\u00a0/g, ' ')})`,
+        money(quote.total).replace(/\u00a0/g, ' '),
+      ];
+      const rowLines = rowValues.map((value, index) => pdf.splitTextToSize(value, columns[index].width - 4));
+      const rowHeight = Math.max(12, ...rowLines.map((lines) => lines.length * 5 + 6));
+      const drawRow = (values, lines, height, header = false) => {
+        let x = margin;
+        columns.forEach((column, index) => {
+          if (header) {
+            pdf.setFillColor(243, 246, 251);
+            pdf.rect(x, y, column.width, height, 'F');
+          }
+          pdf.setDrawColor(220, 226, 236);
+          pdf.rect(x, y, column.width, height);
+          pdf.setFont('helvetica', header ? 'bold' : 'normal');
+          pdf.setFontSize(header ? 8 : 9);
+          pdf.setTextColor(52, 64, 84);
+          pdf.text(lines[index], x + 2, y + 5);
+          x += column.width;
+        });
+        y += height;
+      };
+
+      drawRow(columns.map((column) => column.label), columns.map((column) => [column.label]), 9, true);
+      if (y + rowHeight > pageHeight - margin) {
+        pdf.addPage();
+        y = margin;
+      }
+      drawRow(rowValues, rowLines, rowHeight);
+      y += 12;
+      if (y + 16 > pageHeight - margin) {
+        pdf.addPage();
+        y = margin;
+      }
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(12);
+      pdf.text(`Total do orçamento: ${money(quote.total).replace(/\u00a0/g, ' ')}`, pageWidth - margin, y, { align: 'right' });
+      y += 9;
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(9);
+      pdf.text(`Status: ${quote.status === 'effective' ? 'Venda registrada' : 'Aprovado'}`, margin, y);
+      if (Number(quote.revisionNumber) > 1) {
+        pdf.text(`Revisão ${quote.revisionNumber}`, pageWidth - margin, y, { align: 'right' });
+      }
+
+      const safeCustomer = String(quote.customer || 'cliente')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/gi, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase() || 'cliente';
+      pdf.save(`orcamento-${safeCustomer}.pdf`);
+    }, undefined, {
+      action: 'export',
+      entity: 'quote',
+      entityId: quote.id,
+      sourceScreen: 'orcamentos',
+      summary: `Exportou em PDF o orçamento de ${quote.customer}.`,
+    });
+  }
+
+  function quoteSummary(quote) {
+    return [
+      `Orçamento para ${quote.customer}`,
+      `Produto: ${quote.productName}`,
+      `Quantidade: ${quote.quantity}`,
+      `Preço unitário líquido: ${money(quote.unitPrice)}`,
+      `Desconto: ${Number(quote.discountPercent) || 0}% (${money(quote.discountAmount)})`,
+      `Total: ${money(quote.total)}`,
+      `Forma de pagamento: ${quote.paymentMethod || 'A combinar'}`,
+      `Condição de pagamento: ${quote.paymentTerms || 'A combinar'}`,
+      `Data: ${dateLabel(quote.createdAt)} · Válido até: ${dateOnlyLabel(quote.validUntil)}`,
+    ].join('\n');
+  }
+
+  async function openShareDialog(quote) {
+    setShareQuote(quote);
+    setShareRecipientId('');
+    setShareText(quoteSummary(quote));
+    setShareError('');
+    setContactsLoading(true);
+    try {
+      const recipients = demoMode
+        ? (profiles || []).filter((person) => person.id !== user.uid && canChat(person))
+          .map((person) => ({ id: person.id, name: person.name || person.email }))
+        : await listChatContacts();
+      setShareContacts(recipients);
+      if (!recipients.length) setShareError('Não há membros ativos autorizados ao chat para receber este orçamento.');
+    } catch (issue) {
+      setShareError(userError(issue));
+    } finally {
+      setContactsLoading(false);
+    }
+  }
+
+  async function shareQuoteByChat(event) {
+    event.preventDefault();
+    const text = shareText.trim();
+    if (!shareQuote || !shareRecipientId || !text || sharing) return;
+    setSharing(true);
+    const succeeded = await onRun(() => sendChatMessage({
+      senderId: user.uid,
+      senderName: profile?.name || user.email,
+      recipientId: shareRecipientId,
+      text,
+      messageId: doc(collection(db, 'chatMessages')).id,
+    }), undefined, {
+      action: 'share',
+      entity: 'quote',
+      entityId: shareQuote.id,
+      sourceScreen: 'orcamentos',
+      summary: `Compartilhou o orçamento de ${shareQuote.customer} com um membro da equipe pelo chat.`,
+    });
+    if (succeeded) setShareQuote(null);
+    setSharing(false);
+  }
+
   const sortedQuotes = quotes.slice().sort((a, b) => timeValue(b.createdAt) - timeValue(a.createdAt));
-  return <><div className="action-row"><div><h2>Simulação e acompanhamento</h2><p className="muted">Simule o preço pela margem desejada e registre a venda somente na efetivação.</p></div><button className="primary-button" onClick={() => setModal(true)}><Plus size={17} /> Novo orçamento</button></div>
-    <div className="quote-info"><Tag size={18} /><span>Preço sugerido = custo unitário completo (com rateio, se habilitado) × (1 + margem desejada).</span></div>
-    <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Produto</th><th>Data</th><th>Qtd.</th><th>Custo unit.</th><th>Preço unit.</th><th>Total</th><th>Status / ação</th></tr></thead><tbody>{sortedQuotes.map((quote) => <tr key={quote.id}><td><strong>{quote.customer}</strong></td><td>{quote.productName}</td><td>{dateLabel(quote.createdAt)}</td><td>{quote.quantity}</td><td>{money(quote.unitCost)}</td><td><strong>{money(quote.unitPrice)}</strong>{Number(quote.unitPrice) < Number(quote.unitCost) && <small className="table-sub warning-text">Abaixo do custo</small>}</td><td>{money(quote.total)}</td><td>{quote.status === 'effective' ? <span className="regular-tag">Efetivado</span> : <button className="small-primary" onClick={() => concludeQuote(quote)}>Registrar venda</button>}</td></tr>)}</tbody></table>{!quotes.length && <div className="empty-state"><FileText size={26} /><p>Nenhum orçamento criado.</p></div>}</div></section>
-    {approvalQuote && <Modal title="Autorizar venda abaixo do custo" onClose={() => setApprovalQuote(null)}><form className="modal-form" onSubmit={authorizeBelowCost}><div className="cost-note"><ShieldCheck size={18} /><p><strong>{approvalQuote.productName}</strong> será vendido por {money(approvalQuote.unitPrice)} por unidade, abaixo do custo de {money(approvalQuote.unitCost)}. Registre a justificativa para liberar a venda.</p></div><Field label="Justificativa (mínimo 10 caracteres)"><textarea name="justification" required minLength="10" rows="4" autoFocus /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setApprovalQuote(null)}>Cancelar</button><button className="primary-button"><ShieldCheck size={16} /> Autorizar venda</button></div></form></Modal>}
-    {modal && <Modal title="Simular orçamento" onClose={() => setModal(false)}><form className="modal-form" onSubmit={saveQuote}><Field label="Cliente"><input name="customer" required placeholder="Nome do cliente" /></Field><Field label="Produto"><select name="productId" required defaultValue=""><option value="" disabled>Selecione um produto</option>{products.map((item) => <option value={item.id} key={item.id}>{item.name} · custo {money(productCost(item, products, expenses, activeDreReport))} · estoque {item.stock}</option>)}</select></Field><div className="field-grid"><Field label="Quantidade"><input name="quantity" type="number" min="1" step="1" required defaultValue="1" /></Field><Field label="Margem desejada (%)"><input name="margin" type="number" min="0" step="0.1" defaultValue="30" /></Field></div><Field label="Preço unitário personalizado (R$) · opcional"><input name="unitPrice" type="number" min="0" step="0.01" placeholder="Em branco para usar o preço sugerido" /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(false)}>Cancelar</button><button className="primary-button"><FileText size={16} /> Salvar orçamento</button></div></form></Modal>}
+  const draftProduct = products.find((item) => item.id === quoteDraft.productId);
+  const suggestedUnitPrice = draftProduct
+    ? roundMoney(productCost(draftProduct, products, expenses, activeDreReport) * (1 + asNumber(quoteDraft.margin) / 100))
+    : 0;
+  return <>
+    <div className="action-row"><div><h2>Simulação e acompanhamento</h2><p className="muted">Crie, aprove e registre a venda de orçamentos dentro do prazo de validade.</p></div><button className="primary-button" onClick={() => openQuoteForm()}><Plus size={17} /> Novo orçamento</button></div>
+    <div className="quote-info"><Tag size={18} /><span>O preço sugerido considera custo + margem e pode ser editado. Pix é à vista; Cartão e Boleto permitem até 12 parcelas. O desconto é aplicado ao preço unitário e ao total. Se o valor líquido ficar abaixo do custo, será necessária uma justificativa ao registrar a venda.</span></div>
+    <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Produto</th><th>Data</th><th>Validade</th><th>Qtd.</th><th>Pagamento</th><th>Custo unit.</th><th>Preço unit. líquido</th><th>Desconto</th><th>Total</th><th>Status / ações</th></tr></thead><tbody>
+      {sortedQuotes.map((quote) => {
+        const expired = isQuoteExpired(quote) && quote.status !== 'effective';
+        const listUnitPrice = Number(quote.listUnitPrice ?? quote.unitPrice);
+        return <tr key={quote.id}>
+          <td><strong>{quote.customer}</strong>{Number(quote.revisionNumber) > 1 && <small className="table-sub">Revisão {quote.revisionNumber}</small>}{quote.customerEmail && <small className="table-sub">{quote.customerEmail}</small>}</td>
+          <td>{quote.productName}</td>
+          <td>{dateLabel(quote.createdAt)}</td>
+          <td>{dateOnlyLabel(quote.validUntil)}</td>
+          <td>{quote.quantity}</td>
+          <td><strong>{quote.paymentMethod || '—'}</strong><small className="table-sub">{quote.paymentTerms || '—'}</small></td>
+          <td>{money(quote.unitCost)}</td>
+          <td><strong>{money(quote.unitPrice)}</strong>{listUnitPrice !== Number(quote.unitPrice) && <small className="table-sub">De {money(listUnitPrice)}</small>}{Number(quote.unitPrice) < Number(quote.unitCost) && <small className="table-sub warning-text">Abaixo do custo</small>}</td>
+          <td>{Number(quote.discountPercent) || 0}%<small className="table-sub">{money(quote.discountAmount)}</small></td>
+          <td><strong>{money(quote.total)}</strong>{quote.subtotal != null && Number(quote.subtotal) !== Number(quote.total) && <small className="table-sub">Subtotal {money(quote.subtotal)}</small>}</td>
+          <td><div className="quote-actions">
+            <button type="button" className="secondary-button" onClick={() => emailQuote(quote)}><Mail size={14} /> Preparar e-mail</button>
+            {canChat(profile) && <button type="button" className="secondary-button" onClick={() => openShareDialog(quote)}><MessageCircle size={14} /> Chat</button>}
+            {quote.status === 'effective' && <span className="regular-tag">Venda registrada</span>}
+            {quote.status === 'rejected' && <span className="below-tag">Recusado</span>}
+            {expired && <span className="below-tag">Vencido</span>}
+            {['approved', 'effective'].includes(quote.status) && <button type="button" className="secondary-button" onClick={() => exportQuotePdf(quote)}><Download size={14} /> Exportar PDF</button>}
+            {!expired && quote.status === 'pending' && <button type="button" className="small-primary" onClick={() => approveQuoteItem(quote)}>Aprovar orçamento</button>}
+            {quote.status === 'pending' && <button type="button" className="secondary-button" onClick={() => rejectQuoteItem(quote)}><Ban size={14} /> Recusar orçamento</button>}
+            {!expired && quote.status === 'approved' && <button type="button" className="small-primary" onClick={() => concludeQuote(quote)}>Registrar venda</button>}
+            {quote.status === 'rejected' && <><button type="button" className="secondary-button" onClick={() => openQuoteForm(quote)}><RotateCcw size={14} /> Revisar orçamento</button><button type="button" className="secondary-button" onClick={() => removeRejectedQuote(quote)}><Trash2 size={14} /> Excluir orçamento</button></>}
+            {!['pending', 'approved', 'effective', 'rejected'].includes(quote.status) && <span className="regular-tag">Em aberto</span>}
+          </div></td>
+        </tr>;
+      })}
+    </tbody></table>{!quotes.length && <div className="empty-state"><FileText size={26} /><p>Nenhum orçamento criado.</p></div>}</div></section>
+    {belowCostQuote && <Modal title="Autorizar venda abaixo do custo" onClose={() => setBelowCostQuote(null)}><form className="modal-form" onSubmit={authorizeBelowCost}><div className="cost-note"><ShieldCheck size={18} /><p><strong>{belowCostQuote.productName}</strong> será vendido por {money(belowCostQuote.unitPrice)} por unidade, abaixo do custo de {money(belowCostQuote.unitCost)}. Registre a justificativa para liberar a venda.</p></div><Field label="Justificativa (mínimo 10 caracteres)"><textarea name="justification" required minLength="10" rows="4" autoFocus /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setBelowCostQuote(null)}>Cancelar</button><button className="primary-button"><ShieldCheck size={16} /> Registrar venda</button></div></form></Modal>}
+    {shareQuote && <Modal title="Compartilhar orçamento pelo chat" onClose={() => !sharing && setShareQuote(null)} closeDisabled={sharing}><form className="modal-form" onSubmit={shareQuoteByChat}>
+      {shareError && <p className="error-text" role="alert">{shareError}</p>}
+      <Field label="Membro da equipe"><select required value={shareRecipientId} onChange={(event) => setShareRecipientId(event.currentTarget.value)} disabled={contactsLoading || !shareContacts.length}><option value="">{contactsLoading ? 'Carregando membros…' : 'Selecione quem receberá'}</option>{shareContacts.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></Field>
+      <Field label="Resumo da mensagem"><textarea value={shareText} onChange={(event) => setShareText(event.currentTarget.value)} required maxLength="2000" rows="8" /></Field>
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShareQuote(null)} disabled={sharing}>Cancelar</button><button className="primary-button" disabled={sharing || contactsLoading || !shareRecipientId || !shareText.trim()}><Send size={16} />{sharing ? 'Enviando…' : 'Enviar pelo chat'}</button></div>
+    </form></Modal>}
+    {modal && <Modal title={revisionQuote ? 'Revisar orçamento' : 'Criar orçamento'} onClose={() => setModal(false)}><form className="modal-form" onSubmit={saveQuote}>
+      {revisionQuote && <div className="quote-info"><RotateCcw size={17} /><span>Será criada uma nova versão pendente. O orçamento recusado continuará preservado no histórico.</span></div>}
+      <Field label="Cliente"><input name="customer" value={quoteDraft.customer} onChange={(event) => updateQuoteDraft('customer', event.currentTarget.value)} required placeholder="Nome do cliente" /></Field>
+      <Field label="E-mail do cliente (opcional)"><input name="customerEmail" type="email" value={quoteDraft.customerEmail} onChange={(event) => updateQuoteDraft('customerEmail', event.currentTarget.value)} placeholder="cliente@empresa.com" /></Field>
+      <Field label="Produto"><select name="productId" required value={quoteDraft.productId} onChange={(event) => updateQuoteDraft('productId', event.currentTarget.value)}><option value="" disabled>Selecione um produto</option>{products.map((item) => <option value={item.id} key={item.id}>{item.name} · custo {money(productCost(item, products, expenses, activeDreReport))} · estoque {item.stock}</option>)}</select></Field>
+      <div className="field-grid"><Field label="Quantidade"><input name="quantity" type="number" min="1" step="1" required value={quoteDraft.quantity} onChange={(event) => updateQuoteDraft('quantity', event.currentTarget.value)} /></Field><Field label="Margem desejada (%)"><input name="margin" type="number" min="0" step="0.1" value={quoteDraft.margin} onChange={(event) => updateQuoteDraft('margin', event.currentTarget.value)} /></Field></div>
+      <Field label="Preço unitário antes do desconto (R$)"><input name="unitPrice" type="number" min="0" step="0.01" required value={quoteDraft.unitPrice} onChange={(event) => updateQuoteDraft('unitPrice', event.currentTarget.value)} /></Field>
+      <p className="muted">Preço sugerido (custo + margem): <strong>{money(suggestedUnitPrice)}</strong> <button type="button" className="text-button" onClick={() => updateQuoteDraft('unitPrice', String(suggestedUnitPrice))}>Usar preço sugerido</button></p>
+      <div className="field-grid"><Field label="Desconto (%)"><input name="discountPercent" type="number" min="0" max="100" step="0.1" value={quoteDraft.discountPercent} onChange={(event) => updateQuoteDraft('discountPercent', event.currentTarget.value)} /></Field><Field label="Validade"><select name="validityDays" value={quoteDraft.validityDays} onChange={(event) => updateQuoteDraft('validityDays', event.currentTarget.value)}><option value="7">7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option><option value="60">60 dias</option></select></Field></div>
+      <div className="field-grid"><Field label="Forma de pagamento"><select name="paymentMethod" value={quoteDraft.paymentMethod} onChange={(event) => updateQuoteDraft('paymentMethod', event.currentTarget.value)}><option value="Pix">Pix</option><option value="Cartão">Cartão</option><option value="Boleto">Boleto</option></select></Field>{quoteDraft.paymentMethod === 'Pix' ? <Field label="Condição de pagamento"><input value="À vista" readOnly /></Field> : <Field label="Número de parcelas"><select name="installments" value={quoteDraft.installments} onChange={(event) => updateQuoteDraft('installments', event.currentTarget.value)}>{Array.from({ length: 12 }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{count} {count === 1 ? 'parcela' : 'parcelas'}</option>)}</select></Field>}</div>
+      <div className="cost-note"><Tag size={18} /><p>A data do orçamento será preenchida automaticamente; revisões recebem nova data de cadastro e validade. A validade padrão é de 30 dias e o desconto é aplicado ao total líquido.</p></div>
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(false)}>Cancelar</button><button className="primary-button"><FileText size={16} /> {revisionQuote ? 'Criar nova versão' : 'Salvar orçamento'}</button></div>
+    </form></Modal>}
   </>;
 }
 

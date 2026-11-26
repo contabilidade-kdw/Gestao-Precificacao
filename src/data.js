@@ -7,6 +7,13 @@ const demoAnalyst = { uid: 'demo-darlan', email: 'darlan@prisma.local' };
 const demoScreenPermissions = ['painel', 'produtos', 'estoque', 'orcamentos', 'vendas', 'despesas', 'historico', 'chat', 'perfis'];
 const timestamp = () => new Date().toISOString();
 const makeId = () => Math.random().toString(36).slice(2, 10);
+const localDateValue = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+export const isQuoteExpired = (quote) => Boolean(quote?.validUntil && quote.validUntil < localDateValue());
 const makeSeedData = () => {
   const now = timestamp();
   return {
@@ -487,8 +494,11 @@ export async function finalizeQuoteSale(quote, justification, userId, actorName)
     return runTransaction(db, async (transaction) => {
       const quoteRef = doc(db, 'quotes', quote.id);
       const quoteSnapshot = await transaction.get(quoteRef);
-      if (!quoteSnapshot.exists() || quoteSnapshot.data().status === 'effective') {
-        throw new Error('Este orçamento já foi concluído ou não existe.');
+      if (!quoteSnapshot.exists() || quoteSnapshot.data().status !== 'approved') {
+        throw new Error('Aprove o orçamento antes de registrar a venda.');
+      }
+      if (isQuoteExpired(quoteSnapshot.data())) {
+        throw new Error('O orçamento venceu e não pode ser registrado como venda.');
       }
       const productRef = doc(db, 'products', quote.productId);
       const productSnapshot = await transaction.get(productRef);
@@ -503,7 +513,11 @@ export async function finalizeQuoteSale(quote, justification, userId, actorName)
         quoteId: quote.id, customer: quote.customer, productId: quote.productId,
         productName: quote.productName, quantity: Number(quote.quantity),
         unitCost: Number(quote.unitCost), unitPrice: Number(quote.unitPrice),
-        total: Number(quote.total), justification: justification?.trim() || '',
+        total: Number(quote.total), discountPercent: Number(quote.discountPercent) || 0,
+        discountAmount: Number(quote.discountAmount) || 0,
+        paymentMethod: quote.paymentMethod || '',
+        paymentTerms: quote.paymentTerms || '',
+        justification: justification?.trim() || '',
         createdBy: userId, createdByName: actorName,
         createdAt,
       });
@@ -522,7 +536,72 @@ export async function finalizeQuoteSale(quote, justification, userId, actorName)
   if (error) throw error;
 }
 
-export async function sendChatMessage({ recipientId, text, messageId }) {
+export async function approveQuote(quote, userId, actorName) {
+  if (demoMode) {
+    if (quote.status !== 'pending') throw new Error('Somente orçamentos pendentes podem ser aprovados.');
+    if (isQuoteExpired(quote)) throw new Error('O orçamento venceu e não pode ser aprovado.');
+    await updateDoc(doc(db, 'quotes', quote.id), {
+      status: 'approved',
+      approvedAt: serverTimestamp(),
+      approvedBy: userId,
+      approvedByName: actorName,
+    });
+    return;
+  }
+  const { error } = await supabase.rpc('approve_quote', { p_quote_id: quote.id });
+  if (error) throw error;
+}
+
+export async function rejectQuote(quote, userId, actorName) {
+  if (demoMode) {
+    if (quote.status !== 'pending') throw new Error('Somente orçamentos pendentes podem ser recusados.');
+    await updateDoc(doc(db, 'quotes', quote.id), {
+      status: 'rejected',
+      rejectedAt: serverTimestamp(),
+      rejectedBy: userId,
+      rejectedByName: actorName,
+    });
+    return;
+  }
+  const { error } = await supabase.rpc('reject_quote', { p_quote_id: quote.id });
+  if (error) throw error;
+}
+
+export async function deleteRejectedQuote(quoteId) {
+  if (demoMode) {
+    const snapshot = await getDoc(doc(db, 'quotes', quoteId));
+    if (!snapshot.exists() || snapshot.data().status !== 'rejected') {
+      throw new Error('Somente orçamentos recusados podem ser excluídos.');
+    }
+    await deleteDoc(doc(db, 'quotes', quoteId));
+    return;
+  }
+  const { error } = await supabase.rpc('delete_rejected_quote', { p_quote_id: quoteId });
+  if (error) throw error;
+}
+
+export async function sendChatMessage({ recipientId, text, messageId, senderId, senderName }) {
+  if (demoMode) {
+    const conversationId = [senderId, recipientId].sort().join('__');
+    const sentAt = serverTimestamp();
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'chatConversations', conversationId), {
+      participants: [senderId, recipientId].sort(),
+      lastMessage: text,
+      lastMessageAt: sentAt,
+      lastSenderId: senderId,
+    });
+    batch.set(doc(collection(db, 'chatMessages'), messageId), {
+      conversationId,
+      senderId,
+      senderName,
+      recipientId,
+      text,
+      createdAt: sentAt,
+    });
+    await batch.commit();
+    return;
+  }
   const { error } = await supabase.rpc('send_chat_message', {
     p_recipient_id: recipientId,
     p_message_id: messageId,
