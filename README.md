@@ -161,6 +161,7 @@ O app anterior estava em modo de demonstração e não havia um projeto Firebase
 - Despesas indiretas mensais habilitadas são rateadas proporcionalmente ao custo direto multiplicado pelo volume mensal.
 - O preço sugerido é o custo completo multiplicado por `1 + margem / 100`.
 - Um orçamento precisa ser aprovado antes da venda; orçamentos vencidos não podem ser aprovados nem registrados. Registrar a venda verifica e baixa o estoque numa transação no Postgres.
+- A tela e o PDF de orçamentos exibem quem criou e aprovou cada registro; a tela apresenta os responsáveis na última coluna. A migração `20261126140000_quote_approval_name.sql` grava o nome do aprovador e atualiza os registros aprovados existentes.
 - Orçamentos pendentes podem ser recusados; os recusados podem gerar uma nova versão pendente, preservando o registro anterior, ou ser excluídos. Somente orçamentos recusados podem ser excluídos.
 - O desconto do orçamento reduz o preço unitário e o total; a venda registra o valor líquido e conserva o percentual/valor do desconto.
 - O preço sugerido é calculado por custo completo + margem, pode ser editado antes de salvar e fica registrado no orçamento. Pix é sempre à vista; Cartão e Boleto aceitam de 1 a 12 parcelas.

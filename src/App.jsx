@@ -39,6 +39,15 @@ const dateOnlyLabel = (value) => {
   if (!match) return dateLabel(value);
   return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString('pt-BR');
 };
+const productDraftStorageKey = 'atrativa-new-product-draft';
+const emptyProductDraft = () => ({
+  name: '', sku: '', stock: '0', description: '', purchaseCost: '0', laborCost: '0',
+  packagingCost: '0', otherCost: '0', monthlyVolume: '100', margin: '30', rateioEnabled: true,
+});
+const readProductDraft = () => {
+  const savedDraft = sessionStorage.getItem(productDraftStorageKey);
+  return savedDraft ? { ...emptyProductDraft(), ...JSON.parse(savedDraft) } : emptyProductDraft();
+};
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const uid = () => Math.random().toString(36).slice(2, 10);
 const asNumber = (value) => Number.parseFloat(value) || 0;
@@ -63,9 +72,9 @@ function Field({ label, children, className = '' }) {
   return <label className={`field ${className}`}><span>{label}</span>{children}</label>;
 }
 
-function Modal({ title, onClose, children, className = '', closeDisabled = false }) {
-  return <div className="modal-backdrop" onMouseDown={(event) => !closeDisabled && event.target === event.currentTarget && onClose()}>
-    <section className={`modal ${className}`}><header><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Fechar" disabled={closeDisabled}><X size={19} /></button></header>{children}</section>
+function Modal({ title, onClose, children, className = '', closeDisabled = false, closeOnBackdrop = true, hideCloseButton = false }) {
+  return <div className="modal-backdrop" onMouseDown={(event) => !closeDisabled && closeOnBackdrop && event.target === event.currentTarget && onClose()}>
+    <section className={`modal ${className}`}><header><h2>{title}</h2>{!hideCloseButton && <button className="icon-button" onClick={onClose} aria-label="Fechar" disabled={closeDisabled}><X size={19} /></button>}</header>{children}</section>
   </div>;
 }
 
@@ -747,13 +756,34 @@ function SalesTable({ sales, empty = 'Nenhum registro.' }) {
 }
 
 function ProductsPage({ products, expenses, onRun, activeDreReport, user, profile }) {
-  const [modal, setModal] = useState(false);
+  const [newProductDraft, setNewProductDraft] = useState(readProductDraft);
+  const [modal, setModal] = useState(() => sessionStorage.getItem(productDraftStorageKey) !== null);
   const [expenseModal, setExpenseModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [editingExpense, setEditingExpense] = useState(null);
   const dreAccounts = activeDreReport?.accounts || [];
   const allocatedExpenses = expenses.filter((item) => item.includedInAllocation).reduce((sum, item) => sum + Number(item.amount || 0), 0)
     + dreAccounts.filter((item) => item.type === 'indirect' && item.includedInAllocation).reduce((sum, item) => sum + Number(item.monthlyAverage || 0), 0);
+  function openNewProductModal() {
+    setEditingProduct(null);
+    sessionStorage.setItem(productDraftStorageKey, JSON.stringify(newProductDraft));
+    setModal(true);
+  }
+  function closeProductModal() {
+    if (!editingProduct) {
+      sessionStorage.removeItem(productDraftStorageKey);
+      setNewProductDraft(emptyProductDraft());
+    }
+    setModal(false);
+    setEditingProduct(null);
+  }
+  function persistNewProductDraft(event) {
+    const data = new FormData(event.currentTarget);
+    const draft = Object.fromEntries(data.entries());
+    draft.rateioEnabled = data.get('rateioEnabled') === 'on';
+    sessionStorage.setItem(productDraftStorageKey, JSON.stringify(draft));
+    setNewProductDraft(draft);
+  }
   async function saveProduct(event) {
     event.preventDefault(); const data = new FormData(event.currentTarget);
     const details = { name: String(data.get('name')).trim(), sku: String(data.get('sku')).trim(), description: String(data.get('description')).trim(), purchaseCost: asNumber(data.get('purchaseCost')), laborCost: asNumber(data.get('laborCost')), packagingCost: asNumber(data.get('packagingCost')), otherCost: asNumber(data.get('otherCost')), monthlyVolume: Math.max(1, asNumber(data.get('monthlyVolume'))), rateioEnabled: data.get('rateioEnabled') === 'on', margin: Math.max(0, asNumber(data.get('margin'))) };
@@ -773,6 +803,8 @@ function ProductsPage({ products, expenses, onRun, activeDreReport, user, profil
         batch.set(movementRef, { productId: productRef.id, productName: product.name, type: 'in', quantity: product.stock, reason: 'Estoque inicial', createdAt: serverTimestamp(), createdBy: user.uid, createdByName: profile?.name || user.email });
       }
       await batch.commit();
+      sessionStorage.removeItem(productDraftStorageKey);
+      setNewProductDraft(emptyProductDraft());
       setModal(false);
     }, undefined, { action: editingProduct ? 'update' : 'create', entity: 'product', entityId: editingProduct?.id, sourceScreen: 'produtos', summary: `${editingProduct ? 'Atualizou' : 'Cadastrou'} o produto "${details.name}".` });
   }
@@ -797,7 +829,7 @@ function ProductsPage({ products, expenses, onRun, activeDreReport, user, profil
     await onRun(() => deleteDoc(doc(db, 'expenses', expense.id)), undefined, { action: 'delete', entity: 'expense', entityId: expense.id, sourceScreen: 'produtos', summary: `Excluiu a despesa "${expense.name}".` });
   }
   const updatedProducts = products.map((product) => ({ ...product, unitCost: productCost(product, products, expenses, activeDreReport) }));
-  return <><div className="action-row"><div><h2>Produtos cadastrados</h2><p className="muted">Composição do custo unitário e despesas rateadas.</p></div><div className="button-group"><button className="secondary-button" onClick={() => { setEditingExpense(null); setExpenseModal(true); }}><CircleDollarSign size={16} /> Despesas indiretas</button><button className="primary-button" onClick={() => { setEditingProduct(null); setModal(true); }}><Plus size={17} /> Novo produto</button></div></div>
+  return <><div className="action-row"><div><h2>Produtos cadastrados</h2><p className="muted">Composição do custo unitário e despesas rateadas.</p></div><div className="button-group"><button className="secondary-button" onClick={() => { setEditingExpense(null); setExpenseModal(true); }}><CircleDollarSign size={16} /> Despesas indiretas</button><button className="primary-button" onClick={openNewProductModal}><Plus size={17} /> Novo produto</button></div></div>
     <div className="cost-note"><BadgeDollarSign size={19} /><p><strong>Como funciona o rateio:</strong> despesas manuais selecionadas e contas indiretas habilitadas do DRE são distribuídas entre os produtos habilitados, proporcionalmente ao custo direto mensal estimado (custo direto × volume mensal). O custo unitário inclui a parcela alocada. Contas diretas do DRE ficam visíveis para conferência e não são somadas automaticamente aos custos cadastrados por produto.</p></div>
     <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Produto</th><th>Estoque</th><th>Composição direta</th><th>Rateio / un.</th><th>Custo unitário</th><th>Preço sugerido</th><th></th></tr></thead><tbody>
       {updatedProducts.map((item) => { const share = Number(item.unitCost) - directCost(item); return <tr key={item.id}><td><strong>{item.name}</strong><small className="table-sub">{item.sku || 'Sem código'}</small></td><td>{item.stock} un.</td><td>{money(directCost(item))}</td><td>{item.rateioEnabled ? money(share) : '—'}</td><td><strong>{money(item.unitCost)}</strong></td><td><span className="price-pill">{money(Number(item.unitCost) * (1 + Number(item.margin || 0) / 100))}</span></td><td><div className="button-group"><button className="icon-button" title="Editar produto" aria-label={`Editar ${item.name}`} onClick={() => { setEditingProduct(item); setModal(true); }}><Pencil size={15} /></button><button className="text-button danger-text" onClick={() => removeProduct(item)}>Excluir</button></div></td></tr>; })}
@@ -810,12 +842,12 @@ function ProductsPage({ products, expenses, onRun, activeDreReport, user, profil
         {dreAccounts.map((account) => <tr key={account.code}><td>{account.code}</td><td><strong>{account.name}</strong></td><td>{dreTypeLabel(account.type)}</td><td>{money(account.monthlyAverage)}</td><td>{account.type === 'indirect' && account.includedInAllocation ? <span className="regular-tag">Incluída</span> : '—'}</td></tr>)}
       </tbody></table></div> : <p className="muted dre-empty">{activeDreReport ? 'O relatório ativo não contém contas detalhadas.' : 'Nenhum DRE selecionado para consulta.'}</p>}
     </section>
-    {modal && <Modal title={editingProduct ? 'Editar produto e custos' : 'Cadastrar produto'} onClose={() => { setModal(false); setEditingProduct(null); }}><form className="modal-form" onSubmit={saveProduct}>
-      <Field label="Nome do produto"><input name="name" required defaultValue={editingProduct?.name || ''} /></Field><div className="field-grid"><Field label="Código / SKU"><input name="sku" defaultValue={editingProduct?.sku || ''} /></Field>{!editingProduct && <Field label="Estoque inicial (un.)"><input name="stock" type="number" min="0" step="1" defaultValue="0" required /></Field>}</div>
-      <Field label="Descrição"><input name="description" defaultValue={editingProduct?.description || ''} /></Field><div className="form-section-label">Composição do custo unitário</div>
-      <div className="field-grid two"><Field label="Matéria-prima / compra (R$)"><input name="purchaseCost" type="number" min="0" step="0.01" defaultValue={editingProduct?.purchaseCost ?? 0} /></Field><Field label="Mão de obra (R$)"><input name="laborCost" type="number" min="0" step="0.01" defaultValue={editingProduct?.laborCost ?? 0} /></Field><Field label="Embalagem (R$)"><input name="packagingCost" type="number" min="0" step="0.01" defaultValue={editingProduct?.packagingCost ?? 0} /></Field><Field label="Outros custos diretos (R$)"><input name="otherCost" type="number" min="0" step="0.01" defaultValue={editingProduct?.otherCost ?? 0} /></Field></div>
-      <div className="field-grid"><Field label="Volume mensal estimado (un.)"><input name="monthlyVolume" type="number" min="1" step="1" defaultValue={editingProduct?.monthlyVolume ?? 100} required /></Field><Field label="Margem desejada (%)"><input name="margin" type="number" min="0" step="0.1" defaultValue={editingProduct?.margin ?? 30} /></Field></div>
-      <label className="check-label"><input name="rateioEnabled" type="checkbox" defaultChecked={editingProduct ? editingProduct.rateioEnabled : true} /> Incluir despesas rateadas no custo</label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setModal(false); setEditingProduct(null); }}>Cancelar</button><button className="primary-button"><Plus size={16} /> {editingProduct ? 'Salvar alterações' : 'Salvar produto'}</button></div>
+    {modal && <Modal title={editingProduct ? 'Editar produto e custos' : 'Cadastrar produto'} onClose={closeProductModal} closeOnBackdrop={Boolean(editingProduct)} hideCloseButton={!editingProduct}><form className="modal-form" onSubmit={saveProduct} onChange={!editingProduct ? persistNewProductDraft : undefined}>
+      <Field label="Nome do produto"><input name="name" required defaultValue={editingProduct ? editingProduct.name || '' : newProductDraft.name} /></Field><div className="field-grid"><Field label="Código / SKU"><input name="sku" defaultValue={editingProduct ? editingProduct.sku || '' : newProductDraft.sku} /></Field>{!editingProduct && <Field label="Estoque inicial (un.)"><input name="stock" type="number" min="0" step="1" defaultValue={newProductDraft.stock} required /></Field>}</div>
+      <Field label="Descrição"><input name="description" defaultValue={editingProduct ? editingProduct.description || '' : newProductDraft.description} /></Field><div className="form-section-label">Composição do custo unitário</div>
+      <div className="field-grid two"><Field label="Matéria-prima / compra (R$)"><input name="purchaseCost" type="number" min="0" step="0.01" defaultValue={editingProduct ? editingProduct.purchaseCost ?? 0 : newProductDraft.purchaseCost} /></Field><Field label="Mão de obra (R$)"><input name="laborCost" type="number" min="0" step="0.01" defaultValue={editingProduct ? editingProduct.laborCost ?? 0 : newProductDraft.laborCost} /></Field><Field label="Embalagem (R$)"><input name="packagingCost" type="number" min="0" step="0.01" defaultValue={editingProduct ? editingProduct.packagingCost ?? 0 : newProductDraft.packagingCost} /></Field><Field label="Outros custos diretos (R$)"><input name="otherCost" type="number" min="0" step="0.01" defaultValue={editingProduct ? editingProduct.otherCost ?? 0 : newProductDraft.otherCost} /></Field></div>
+      <div className="field-grid"><Field label="Volume mensal estimado (un.)"><input name="monthlyVolume" type="number" min="1" step="1" defaultValue={editingProduct ? editingProduct.monthlyVolume ?? 100 : newProductDraft.monthlyVolume} required /></Field><Field label="Margem desejada (%)"><input name="margin" type="number" min="0" step="0.1" defaultValue={editingProduct ? editingProduct.margin ?? 30 : newProductDraft.margin} /></Field></div>
+      <label className="check-label"><input name="rateioEnabled" type="checkbox" defaultChecked={editingProduct ? editingProduct.rateioEnabled : newProductDraft.rateioEnabled} /> Incluir despesas rateadas no custo</label><div className="modal-actions"><button type="button" className="secondary-button" onClick={closeProductModal}>Cancelar</button><button className="primary-button"><Plus size={16} /> {editingProduct ? 'Salvar alterações' : 'Salvar produto'}</button></div>
     </form></Modal>}
     {expenseModal && <Modal title={editingExpense ? 'Editar despesa indireta' : 'Adicionar despesa indireta'} onClose={() => { setExpenseModal(false); setEditingExpense(null); }}><form className="modal-form" onSubmit={saveExpense}><p className="muted">Informe o valor mensal. Você poderá habilitar ou desabilitar o rateio na lista.</p><Field label="Descrição da despesa"><input name="name" placeholder="Ex.: aluguel, energia, contabilidade" required defaultValue={editingExpense?.name || ''} /></Field><Field label="Valor mensal (R$)"><input name="amount" type="number" min="0.01" step="0.01" required defaultValue={editingExpense?.amount ?? ''} /></Field><label className="check-label"><input name="includedInAllocation" type="checkbox" defaultChecked={editingExpense ? editingExpense.includedInAllocation : true} /> Incluir no rateio de custos</label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => { setExpenseModal(false); setEditingExpense(null); }}>Cancelar</button><button className="primary-button"><Plus size={16} /> {editingExpense ? 'Salvar alterações' : 'Salvar despesa'}</button></div></form></Modal>}
   </>;
@@ -1000,6 +1032,9 @@ function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile
   const [shareError, setShareError] = useState('');
   const [contactsLoading, setContactsLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const profileNames = new Map((profiles || []).map((person) => [person.id, person.name || person.email || '']));
+  const quoteCreatorName = (quote) => quote.createdByName || profileNames.get(quote.createdBy) || '—';
+  const quoteApproverName = (quote) => quote.approvedByName || profileNames.get(quote.approvedBy) || '—';
 
   function openQuoteForm(quote = null) {
     setRevisionQuote(quote);
@@ -1220,12 +1255,13 @@ function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile
 
       const addField = (label, value) => {
         const labelText = `${label}:`;
-        const valueLines = pdf.splitTextToSize(String(value || '—'), contentWidth - 30);
         pdf.setFontSize(9);
         pdf.setFont('helvetica', 'bold');
+        const valueX = margin + pdf.getTextWidth(labelText) + 4;
+        const valueLines = pdf.splitTextToSize(String(value || '—'), pageWidth - margin - valueX);
         pdf.text(labelText, margin, y);
         pdf.setFont('helvetica', 'normal');
-        pdf.text(valueLines, margin + 30, y);
+        pdf.text(valueLines, valueX, y);
         y += Math.max(5, valueLines.length * 5) + 3;
         if (y > pageHeight - margin - 10) {
           pdf.addPage();
@@ -1296,6 +1332,42 @@ function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile
       if (Number(quote.revisionNumber) > 1) {
         pdf.text(`Revisão ${quote.revisionNumber}`, pageWidth - margin, y, { align: 'right' });
       }
+      y += 9;
+
+      const additionalFields = [
+        ['Criado por', quoteCreatorName(quote)],
+        ['Aprovado por', quoteApproverName(quote)],
+      ].map(([label, value]) => {
+        const labelText = `${label}:`;
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(9);
+        const valueX = margin + pdf.getTextWidth(labelText) + 4;
+        return {
+          labelText,
+          valueX,
+          valueLines: pdf.splitTextToSize(String(value || '—'), pageWidth - margin - valueX),
+        };
+      });
+      const additionalInfoHeight = 8 + additionalFields.reduce(
+        (height, field) => height + Math.max(5, field.valueLines.length * 5) + 3,
+        0,
+      );
+      if (y + additionalInfoHeight > pageHeight - margin) {
+        pdf.addPage();
+        y = margin;
+      }
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(10);
+      pdf.text('Informações Adicionais', margin, y);
+      y += 7;
+      additionalFields.forEach((field) => {
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(9);
+        pdf.text(field.labelText, margin, y);
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(field.valueLines, field.valueX, y);
+        y += Math.max(5, field.valueLines.length * 5) + 3;
+      });
 
       const safeCustomer = String(quote.customer || 'cliente')
         .normalize('NFD')
@@ -1377,7 +1449,7 @@ function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile
   return <>
     <div className="action-row"><div><h2>Simulação e acompanhamento</h2><p className="muted">Crie, aprove e registre a venda de orçamentos dentro do prazo de validade.</p></div><button className="primary-button" onClick={() => openQuoteForm()}><Plus size={17} /> Novo orçamento</button></div>
     <div className="quote-info"><Tag size={18} /><span>O preço sugerido considera custo + margem e pode ser editado. Pix é à vista; Cartão e Boleto permitem até 12 parcelas. O desconto é aplicado ao preço unitário e ao total. Se o valor líquido ficar abaixo do custo, será necessária uma justificativa ao registrar a venda.</span></div>
-    <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Produto</th><th>Data</th><th>Validade</th><th>Qtd.</th><th>Pagamento</th><th>Custo unit.</th><th>Preço unit. líquido</th><th>Desconto</th><th>Total</th><th>Status / ações</th></tr></thead><tbody>
+    <section className="panel table-panel"><div className="table-wrap"><table><thead><tr><th>Cliente</th><th>Produto</th><th>Data</th><th>Validade</th><th>Qtd.</th><th>Pagamento</th><th>Custo unit.</th><th>Preço unit. líquido</th><th>Desconto</th><th>Total</th><th>Status / ações</th><th>Responsáveis</th></tr></thead><tbody>
       {sortedQuotes.map((quote) => {
         const expired = isQuoteExpired(quote) && quote.status !== 'effective';
         const listUnitPrice = Number(quote.listUnitPrice ?? quote.unitPrice);
@@ -1387,7 +1459,7 @@ function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile
           <td>{dateLabel(quote.createdAt)}</td>
           <td>{dateOnlyLabel(quote.validUntil)}</td>
           <td>{quote.quantity}</td>
-          <td><strong>{quote.paymentMethod || '—'}</strong><small className="table-sub">{quote.paymentTerms || '—'}</small></td>
+          <td className="quote-payment-cell"><strong>{quote.paymentMethod || '—'}</strong><small className="table-sub">{quote.paymentTerms || '—'}</small></td>
           <td>{money(quote.unitCost)}</td>
           <td><strong>{money(quote.unitPrice)}</strong>{listUnitPrice !== Number(quote.unitPrice) && <small className="table-sub">De {money(listUnitPrice)}</small>}{Number(quote.unitPrice) < Number(quote.unitCost) && <small className="table-sub warning-text">Abaixo do custo</small>}</td>
           <td>{Number(quote.discountPercent) || 0}%<small className="table-sub">{money(quote.discountAmount)}</small></td>
@@ -1405,6 +1477,7 @@ function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile
             {quote.status === 'rejected' && <><button type="button" className="secondary-button" onClick={() => openQuoteForm(quote)}><RotateCcw size={14} /> Revisar orçamento</button><button type="button" className="secondary-button" onClick={() => removeRejectedQuote(quote)}><Trash2 size={14} /> Excluir orçamento</button></>}
             {!['pending', 'approved', 'effective', 'rejected'].includes(quote.status) && <span className="regular-tag">Em aberto</span>}
           </div></td>
+          <td><div className="quote-responsibles"><div><span>Criado por</span><strong>{quoteCreatorName(quote)}</strong></div><div><span>Aprovado por</span><strong>{quoteApproverName(quote)}</strong></div></div></td>
         </tr>;
       })}
     </tbody></table>{!quotes.length && <div className="empty-state"><FileText size={26} /><p>Nenhum orçamento criado.</p></div>}</div></section>
@@ -1424,7 +1497,7 @@ function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile
       <Field label="Preço unitário antes do desconto (R$)"><input name="unitPrice" type="number" min="0" step="0.01" required value={quoteDraft.unitPrice} onChange={(event) => updateQuoteDraft('unitPrice', event.currentTarget.value)} /></Field>
       <p className="muted">Preço sugerido (custo + margem): <strong>{money(suggestedUnitPrice)}</strong> <button type="button" className="text-button" onClick={() => updateQuoteDraft('unitPrice', String(suggestedUnitPrice))}>Usar preço sugerido</button></p>
       <div className="field-grid"><Field label="Desconto (%)"><input name="discountPercent" type="number" min="0" max="100" step="0.1" value={quoteDraft.discountPercent} onChange={(event) => updateQuoteDraft('discountPercent', event.currentTarget.value)} /></Field><Field label="Validade"><select name="validityDays" value={quoteDraft.validityDays} onChange={(event) => updateQuoteDraft('validityDays', event.currentTarget.value)}><option value="7">7 dias</option><option value="15">15 dias</option><option value="30">30 dias</option><option value="60">60 dias</option></select></Field></div>
-      <div className="field-grid"><Field label="Forma de pagamento"><select name="paymentMethod" value={quoteDraft.paymentMethod} onChange={(event) => updateQuoteDraft('paymentMethod', event.currentTarget.value)}><option value="Pix">Pix</option><option value="Cartão">Cartão</option><option value="Boleto">Boleto</option></select></Field>{quoteDraft.paymentMethod === 'Pix' ? <Field label="Condição de pagamento"><input value="À vista" readOnly /></Field> : <Field label="Número de parcelas"><select name="installments" value={quoteDraft.installments} onChange={(event) => updateQuoteDraft('installments', event.currentTarget.value)}>{Array.from({ length: 12 }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{count} {count === 1 ? 'parcela' : 'parcelas'}</option>)}</select></Field>}</div>
+      <div className="quote-payment-fields"><Field label="Forma de pagamento"><select name="paymentMethod" value={quoteDraft.paymentMethod} onChange={(event) => updateQuoteDraft('paymentMethod', event.currentTarget.value)}><option value="Pix">Pix</option><option value="Cartão">Cartão</option><option value="Boleto">Boleto</option></select></Field>{quoteDraft.paymentMethod === 'Pix' ? <Field label="Condição de pagamento"><input value="À vista" readOnly /></Field> : <Field label="Condição de pagamento"><select name="installments" value={quoteDraft.installments} onChange={(event) => updateQuoteDraft('installments', event.currentTarget.value)}>{Array.from({ length: 12 }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{count} {count === 1 ? 'parcela' : 'parcelas'}</option>)}</select></Field>}</div>
       <div className="cost-note"><Tag size={18} /><p>A data do orçamento será preenchida automaticamente; revisões recebem nova data de cadastro e validade. A validade padrão é de 30 dias e o desconto é aplicado ao total líquido.</p></div>
       <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setModal(false)}>Cancelar</button><button className="primary-button"><FileText size={16} /> {revisionQuote ? 'Criar nova versão' : 'Salvar orçamento'}</button></div>
     </form></Modal>}

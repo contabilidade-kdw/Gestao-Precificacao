@@ -26,8 +26,8 @@ const makeSeedData = () => {
       { id: 'despesa-internet', name: 'Internet', amount: 90, includedInAllocation: false, createdAt: now },
     ],
     quotes: [
-      { id: 'orcamento-pendente', customer: 'Mariana Costa', productId: 'produto-cafe', productName: 'Café especial 250g', quantity: 3, unitCost: 22.76, unitPrice: 30.72, margin: 35, total: 92.16, status: 'pending', createdBy: demoAdmin.uid, createdAt: now },
-      { id: 'orcamento-efetivado', customer: 'Empório Central', productId: 'produto-caneca', productName: 'Caneca artesanal', quantity: 2, unitCost: 33.1, unitPrice: 48, margin: 45, total: 96, status: 'effective', createdBy: demoAdmin.uid, saleId: 'venda-demo', soldAt: now, createdAt: now },
+      { id: 'orcamento-pendente', customer: 'Mariana Costa', productId: 'produto-cafe', productName: 'Café especial 250g', quantity: 3, unitCost: 22.76, unitPrice: 30.72, margin: 35, total: 92.16, status: 'pending', createdBy: demoAdmin.uid, createdByName: 'Administrador demonstração', createdAt: now },
+      { id: 'orcamento-efetivado', customer: 'Empório Central', productId: 'produto-caneca', productName: 'Caneca artesanal', quantity: 2, unitCost: 33.1, unitPrice: 48, margin: 45, total: 96, status: 'effective', createdBy: demoAdmin.uid, createdByName: 'Administrador demonstração', approvedBy: demoAdmin.uid, approvedByName: 'Administrador demonstração', approvedAt: now, saleId: 'venda-demo', soldAt: now, createdAt: now },
     ],
     sales: [
       { id: 'venda-demo', quoteId: 'orcamento-efetivado', customer: 'Empório Central', productId: 'produto-caneca', productName: 'Caneca artesanal', quantity: 2, unitCost: 33.1, unitPrice: 48, total: 96, justification: '', createdBy: demoAdmin.uid, createdAt: now },
