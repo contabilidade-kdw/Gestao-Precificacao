@@ -93,7 +93,13 @@ Na tela **Despesas e DRE**, anexe relatórios `.csv` ou `.pdf` com até 10 MB. O
 
 As despesas indiretas selecionadas do DRE são rateadas junto das despesas manuais. As contas diretas ficam disponíveis para conferência e não são somadas automaticamente aos custos unitários. O arquivo original é guardado no bucket privado `dre-reports`.
 
-## Configurar WhatsApp Cloud API
+## Chat interno
+
+O chat interno grava as mensagens e as conversas no Postgres do Supabase usando a função SQL `send_chat_message`, com validação dos perfis autorizados. Ele não depende de Edge Functions, credenciais da Meta ou configuração do WhatsApp. A migração `20261126090000_internal_chat.sql` precisa estar aplicada para enviar mensagens no ambiente Supabase.
+
+## Configurar WhatsApp Cloud API (opcional)
+
+Esta integração é opcional e não é necessária para o chat interno. Configure-a apenas se quiser enviar ou receber mensagens pelo WhatsApp.
 
 O app usa duas Supabase Edge Functions:
 

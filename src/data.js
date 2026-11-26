@@ -522,12 +522,13 @@ export async function finalizeQuoteSale(quote, justification, userId, actorName)
   if (error) throw error;
 }
 
-export async function sendSupabaseChatMessage({ recipientId, text, messageId }) {
-  const { data, error } = await supabase.functions.invoke('send-chat-message', {
-    body: { recipientId, text, messageId },
+export async function sendChatMessage({ recipientId, text, messageId }) {
+  const { error } = await supabase.rpc('send_chat_message', {
+    p_recipient_id: recipientId,
+    p_message_id: messageId,
+    p_message_text: text,
   });
   if (error) throw error;
-  return data;
 }
 
 function applyWrites(data, writes) {

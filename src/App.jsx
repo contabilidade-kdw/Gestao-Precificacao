@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   addDoc, adjustProductStock, authenticateDemo, collection, deleteDoc, doc, finalizeQuoteSale, getDemoAdmin, getDoc,
   importStockBatch, listChatContacts, listHistoryActors, listProfiles, onSnapshot, query, resetDemoData,
-  sendSupabaseChatMessage, where, writeBatch,
+  sendChatMessage, where, writeBatch,
   serverTimestamp, setDoc, updateDoc,
 } from './data.js';
 import {
@@ -409,36 +409,18 @@ function canChat(person) {
   return person?.active === true && (person.role === 'admin' || person.permissions?.includes('chat'));
 }
 
-function whatsappStatusLabel(message) {
-  if (message.whatsappStatus === 'sent') return 'Enviada pelo WhatsApp';
-  if (message.whatsappStatus === 'delivered') return 'Entregue pelo WhatsApp';
-  if (message.whatsappStatus === 'read') return 'Lida pelo WhatsApp';
-  if (message.whatsappStatus === 'failed') return `Falha no WhatsApp${message.whatsappError ? ` · ${message.whatsappError}` : ''}`;
-  if (message.whatsappStatus === 'unavailable') return `WhatsApp não enviado${message.whatsappError ? ` · ${message.whatsappError}` : ''}`;
-  if (message.whatsappStatus === 'local_only') return 'Modo local · somente no chat';
-  if (message.whatsappStatus === 'pending') return 'Enviando pelo WhatsApp…';
-  return '';
-}
-
 function ChatPage({ profiles, profile, user, onRun }) {
   const [contacts, setContacts] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [messages, setMessages] = useState([]);
   const [selectedContactId, setSelectedContactId] = useState('');
   const [draft, setDraft] = useState('');
-  const [myPhone, setMyPhone] = useState(profile.whatsappPhone || '');
-  const [whatsappOptIn, setWhatsappOptIn] = useState(profile.whatsappOptIn === true);
   const [contactError, setContactError] = useState('');
   const [messageError, setMessageError] = useState('');
   const [sending, setSending] = useState(false);
   const bottomRef = useRef(null);
   const selectedContact = contacts.find((contact) => contact.id === selectedContactId) || null;
   const currentConversationId = selectedContact ? chatConversationId(user.uid, selectedContact.id) : '';
-
-  useEffect(() => {
-    setMyPhone(profile.whatsappPhone || '');
-    setWhatsappOptIn(profile.whatsappOptIn === true);
-  }, [profile.whatsappPhone, profile.whatsappOptIn]);
 
   useEffect(() => {
     let active = true;
@@ -483,20 +465,6 @@ function ChatPage({ profiles, profile, user, onRun }) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  async function saveWhatsappSettings(event) {
-    event.preventDefault();
-    const phone = normalizePhone(myPhone);
-    if (whatsappOptIn && phone.length < 8) {
-      setMessageError('Informe um número com DDI válido antes de autorizar o WhatsApp.');
-      return;
-    }
-    setMessageError('');
-    await onRun(() => updateDoc(doc(db, 'profiles', user.uid), { whatsappPhone: phone, whatsappOptIn }), undefined, {
-      action: 'update', entity: 'profile', entityId: user.uid, sourceScreen: 'chat',
-      summary: `${whatsappOptIn ? 'Ativou' : 'Atualizou'} o contato e a autorização de WhatsApp.`,
-    });
-  }
-
   async function sendMessage(event) {
     event.preventDefault();
     const text = draft.trim();
@@ -505,7 +473,6 @@ function ChatPage({ profiles, profile, user, onRun }) {
     setMessageError('');
     const messageRef = doc(collection(db, 'chatMessages'));
     const conversationId = chatConversationId(user.uid, selectedContact.id);
-    let whatsappResult = null;
     const succeeded = await onRun(async () => {
       if (demoMode) {
         const batch = writeBatch(db);
@@ -519,12 +486,10 @@ function ChatPage({ profiles, profile, user, onRun }) {
         batch.set(messageRef, {
           conversationId, senderId: user.uid, senderName: profile.name || user.email,
           recipientId: selectedContact.id, text, createdAt: sentAt,
-          whatsappStatus: 'local_only',
-          whatsappError: 'A integração WhatsApp não envia mensagens no modo demonstração.',
         });
         await batch.commit();
       } else {
-        whatsappResult = await sendSupabaseChatMessage({
+        await sendChatMessage({
           recipientId: selectedContact.id,
           text,
           messageId: messageRef.id,
@@ -536,9 +501,6 @@ function ChatPage({ profiles, profile, user, onRun }) {
     });
     if (succeeded) {
       setDraft('');
-      if (whatsappResult?.whatsappStatus === 'failed' || whatsappResult?.whatsappStatus === 'unavailable') {
-        setMessageError(`A mensagem foi salva no chat, mas não foi enviada pelo WhatsApp: ${whatsappResult.whatsappError || 'verifique a configuração do destinatário.'}`);
-      }
     }
     setSending(false);
   }
@@ -546,10 +508,9 @@ function ChatPage({ profiles, profile, user, onRun }) {
   const selectedConversation = conversations.find((item) => item.id === currentConversationId);
   return <>
     <div className="action-row"><div><h2>Chat da equipe</h2><p className="muted">Converse individualmente com os usuários autorizados ao chat.</p></div></div>
-    <section className="panel whatsapp-preferences"><div><h2>Meu WhatsApp</h2><p className="muted">O número só é usado para mensagens do chat. A autorização pode ser retirada a qualquer momento.</p></div><form onSubmit={saveWhatsappSettings}><Field label="Número com código do país"><input type="tel" value={myPhone} onChange={(event) => setMyPhone(event.currentTarget.value)} placeholder="+55 11 99999-9999" /></Field><label className="check-label"><input type="checkbox" checked={whatsappOptIn} onChange={(event) => setWhatsappOptIn(event.currentTarget.checked)} /> Autorizo receber mensagens operacionais do chat pelo WhatsApp.</label><button className="secondary-button">Salvar WhatsApp</button></form></section>
-    <div className="quote-info chat-whatsapp-note"><MessageCircle size={18} /><span>{demoMode
-      ? 'Modo demonstração: mensagens ficam somente no chat local. Para enviá-las ao WhatsApp, conecte o Supabase, publique as Edge Functions e configure os segredos da Cloud API; o destinatário também precisa ter número válido e autorizar o recebimento.'
-      : 'Mensagens são armazenadas no sistema e enviadas ao WhatsApp quando o destinatário tem número válido e autorizou o recebimento. Respostas recebidas pelo webhook aparecem nesta conversa.'}</span></div>
+    <div className="quote-info chat-internal-note"><MessageCircle size={18} /><span>{demoMode
+      ? 'Modo demonstração: as mensagens ficam salvas somente neste navegador.'
+      : 'As mensagens são gravadas no banco de dados e sincronizadas com os usuários autorizados ao chat.'}</span></div>
     {contactError && <p className="error-text chat-error">{contactError}</p>}
     {messageError && <p className="error-text chat-error" role="alert">{messageError}</p>}
     <section className="chat-layout">
@@ -567,9 +528,8 @@ function ChatPage({ profiles, profile, user, onRun }) {
           <header className="chat-thread-header"><div className="avatar">{selectedContact.name.charAt(0).toUpperCase()}</div><div><strong>{selectedContact.name}</strong><small>{selectedConversation ? 'Conversa individual' : 'Nova conversa'}</small></div></header>
           <div className="chat-message-list">{messages.map((message) => {
             const ownMessage = message.senderId === user.uid;
-            const status = ownMessage ? whatsappStatusLabel(message) : '';
             return <article className={`chat-message ${ownMessage ? 'own' : ''}`} key={message.id}>
-              <p>{message.text}</p><div className="chat-message-meta"><time>{dateTimeLabel(message.createdAt)}</time>{status && <span title={message.whatsappError || ''}>{status}</span>}{ownMessage && message.readAt && <CheckCheck size={14} aria-label="Lida no sistema" />}</div>
+              <p>{message.text}</p><div className="chat-message-meta"><time>{dateTimeLabel(message.createdAt)}</time>{ownMessage && message.readAt && <CheckCheck size={14} aria-label="Lida no sistema" />}</div>
             </article>;
           })}{!messages.length && <div className="empty-state"><MessageCircle size={25} /><p>Envie a primeira mensagem para iniciar a conversa.</p></div>}<div ref={bottomRef} />
           </div>

@@ -17,3 +17,4 @@
 @media(max-width:600px){.action-row>.field{width:100%}.whatsapp-preferences form{grid-template-columns:1fr}.whatsapp-preferences form>.check-label{grid-column:auto}.whatsapp-preferences form>.secondary-button{justify-self:start}.chat-layout{grid-template-columns:1fr}.chat-contact-list{display:flex;max-height:145px;overflow:auto}.chat-contact{width:210px;min-width:210px;border-right:1px solid #f0f2f6}.chat-message-list{min-height:250px;max-height:55vh}.chat-message{max-width:90%}}
 .profile-readonly-info{display:grid;gap:6px;padding:12px;border-radius:7px;background:#f7f9fc;color:#52617a;font-size:10px}.profile-readonly-info small{color:#929baa;font-size:9px}
 .stock-action-buttons{flex-wrap:wrap}
+.chat-internal-note{margin:14px 0}
