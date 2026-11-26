@@ -20,6 +20,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    env:
+      VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+      VITE_DEMO_MODE: 'false'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,6 +34,16 @@ jobs:
           cache: 'npm'
       - name: Install dependencies
         run: npm install
+      - name: Validate production Supabase config
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
+            echo "::error::Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in GitHub Actions variables/secrets."
+            exit 1
+          fi
+          case "$VITE_SUPABASE_URL" in
+            https://*) ;;
+            *) echo "::error::VITE_SUPABASE_URL must use HTTPS."; exit 1 ;;
+          esac
       - name: Build
         run: npm run build
       - name: Setup Pages

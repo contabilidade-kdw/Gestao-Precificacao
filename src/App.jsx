@@ -126,7 +126,7 @@ function AuthScreen({ onDemoLogin }) {
 function SetupNotice() {
   return <main className="setup-page"><div className="setup-card"><div className="brand-mark"><Activity size={25} /></div>
     <p className="eyebrow">CONFIGURAÇÃO NECESSÁRIA</p><h1>Conecte seu projeto Supabase</h1>
-    <p className="muted">Adicione a URL e a chave pública do projeto em um arquivo <code>.env</code> na raiz, usando <code>.env.example</code> como referência. Configure o banco, Authentication, Storage e as Edge Functions conforme o README.</p>
+    <p className="muted">Configure <code>VITE_SUPABASE_URL</code> e <code>VITE_SUPABASE_ANON_KEY</code> no ambiente de build: use <code>.env</code> no desenvolvimento ou as variáveis/secrets do GitHub Actions na publicação. Configure o banco, Authentication, Storage e as Edge Functions conforme o README.</p>
     <div className="setup-steps"><span>1</span><p>Copie a URL e a chave anon/public das configurações do Supabase.</p><span>2</span><p>Execute a migração SQL e configure as políticas RLS e o bucket privado.</p><span>3</span><p>Crie o primeiro administrador conforme o README.</p></div>
   </div></main>;
 }

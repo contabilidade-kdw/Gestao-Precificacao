@@ -4,18 +4,20 @@ Aplicação de controle de estoque, composição e rateio de custos, simulação
 
 Baixe o [guia de configuração do Supabase e WhatsApp Cloud API](./guia-conexao-supabase-whatsapp.pdf).
 
-## Testar localmente com o Live Server
+## Executar localmente
 
-O Live Server serve arquivos estáticos e não compila React/JSX. O workspace está configurado para servir a pasta `dist`.
+Para usar o sistema conectado ao Supabase, configure o arquivo `.env` conforme a seção **Conectar um projeto Supabase** e rode:
 
-1. Instale as dependências: `npm install`.
-2. Gere a demonstração local: `npm run build:demo`.
-3. No VS Code, abra `index.html` e escolha **Open with Live Server**. O endereço padrão é `http://127.0.0.1:5500`.
-4. Após alterar o código, rode novamente `npm run build:demo` e recarregue a página.
+```sh
+npm install
+npm run dev
+```
 
-O modo demonstração entra como administrador, carrega registros de exemplo e guarda as alterações no `localStorage` do navegador. Use **Restaurar dados de exemplo** para recomeçar. Os acessos locais são `admin@prisma.local` e `darlan@prisma.local`; qualquer senha com pelo menos seis caracteres é aceita. A demonstração não envia WhatsApp.
+Para servir uma compilação estática pelo Live Server, gere a versão conectada com `npm run build` e sirva a pasta `dist` (o workspace já está configurado para isso). Após alterar o código, compile novamente e recarregue a página.
 
-Para desenvolver com atualização automática, rode `npm run dev`.
+### Modo demonstração (opcional)
+
+Use `npm run build:demo` somente para testar sem conexão com o Supabase. A demonstração entra como administrador, carrega registros de exemplo e guarda as alterações no `localStorage` do navegador. Use **Restaurar dados de exemplo** para recomeçar. Os acessos locais são `admin@prisma.local` e `darlan@prisma.local`; qualquer senha com pelo menos seis caracteres é aceita. A demonstração não envia WhatsApp e seus dados não são transferidos para o sistema conectado.
 
 ## Conectar um projeto Supabase
 
@@ -33,6 +35,17 @@ Para desenvolver com atualização automática, rode `npm run dev`.
 4. Reinicie o servidor ou gere novamente a compilação depois de editar `.env`. Se `VITE_DEMO_MODE=true` estiver definido, remova-o ou defina-o como `false` para usar o Supabase.
 
 As variáveis `VITE_*` são públicas e ficam incluídas no frontend compilado. **Nunca** use a chave `service_role` ou segredos do WhatsApp em `VITE_*`, no navegador ou no repositório.
+
+### Publicar a versão oficial no GitHub Pages
+
+O workflow `.github/workflows/deploy.yml` publica a versão conectada ao Supabase quando há push na branch `main`. No GitHub, em **Settings → Secrets and variables → Actions**, configure:
+
+- variável `VITE_SUPABASE_URL` com a URL raiz do projeto Supabase, sem `/rest/v1/`;
+- secret `VITE_SUPABASE_ANON_KEY` com a chave pública `anon`/`publishable`. Ela será incluída no JavaScript do site, portanto nunca use aqui a chave `service_role`.
+
+Em **Settings → Pages**, selecione **GitHub Actions** como origem. No Supabase, em **Authentication → URL Configuration**, cadastre a URL publicada como **Site URL** e em **Redirect URLs**. Para este repositório, o endereço padrão é `https://contabilidade-kdw.github.io/Gestao-Precificacao/` (se estiver usando domínio personalizado, use esse domínio). O workflow força o modo oficial e interrompe a publicação se a URL ou a chave estiverem ausentes; sem configuração, o app não troca silenciosamente para demonstração.
+
+Os registros da demonstração ficam no `localStorage` do navegador e **não são transferidos automaticamente** para o Supabase. Depois da publicação oficial, os novos cadastros e alterações serão gravados no Supabase, respeitando o perfil, as permissões e as políticas RLS.
 
 ### 2. Aplicar o banco e as políticas
 
