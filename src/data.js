@@ -1,10 +1,13 @@
 import { db, demoMode, supabase } from './supabase.js';
+import {
+  isInvoiceNumberProvided, isSaleInvoiceCancelled, isSaleInvoiceValidated, isValidInvoiceAccessKey,
+} from './invoiceAccessKey.js';
 
 const storageKey = 'prisma-demo-data-v1';
 const demoAdmin = { uid: 'demo-admin', email: 'admin@prisma.local' };
 const demoColleague = { uid: 'demo-colleague', email: 'colega@prisma.local' };
 const demoAnalyst = { uid: 'demo-darlan', email: 'darlan@prisma.local' };
-const demoScreenPermissions = ['painel', 'produtos', 'estoque', 'orcamentos', 'vendas', 'despesas', 'historico', 'chat', 'perfis'];
+const demoScreenPermissions = ['painel', 'produtos', 'estoque', 'orcamentos', 'vendas', 'faturamento', 'despesas', 'historico', 'chat', 'perfis'];
 const timestamp = () => new Date().toISOString();
 const makeId = () => Math.random().toString(36).slice(2, 10);
 const localDateValue = (date = new Date()) => {
@@ -79,6 +82,11 @@ function readData() {
         whatsappOptIn: false,
         createdAt: timestamp(),
       });
+      localStorage.setItem(storageKey, JSON.stringify(data));
+    }
+    const analystProfile = data.profiles.find((profile) => profile.id === demoAnalyst.uid);
+    if (!analystProfile.permissions?.includes('faturamento')) {
+      analystProfile.permissions = [...(analystProfile.permissions || []), 'faturamento'];
       localStorage.setItem(storageKey, JSON.stringify(data));
     }
     for (const profile of data.profiles || []) {
@@ -532,6 +540,71 @@ export async function finalizeQuoteSale(quote, justification, userId, actorName)
   const { error } = await supabase.rpc('finalize_quote', {
     quote_id: quote.id,
     below_cost_justification: justification?.trim() || '',
+  });
+  if (error) throw error;
+}
+
+export async function registerSaleInvoice(saleId, accessKey, invoiceNumber, userId, actorName) {
+  if (!isValidInvoiceAccessKey(accessKey)) {
+    throw new Error('A chave de acesso da NF-e deve conter exatamente 44 dígitos numéricos.');
+  }
+  if (!isInvoiceNumberProvided(String(invoiceNumber || ''))) {
+    throw new Error('Informe o número da nota fiscal.');
+  }
+  if (demoMode) {
+    const snapshot = await getDoc(doc(db, 'sales', saleId));
+    if (!snapshot.exists()) throw new Error('Venda não encontrada.');
+    const sale = { id: snapshot.id, ...snapshot.data() };
+    if (isSaleInvoiceValidated(sale) || isSaleInvoiceCancelled(sale)) {
+      throw new Error('Esta venda já possui uma NF validada ou cancelada.');
+    }
+    await updateDoc(doc(db, 'sales', saleId), {
+      invoiceAccessKey: accessKey,
+      invoiceNumber: String(invoiceNumber).trim(),
+      invoiceValidatedAt: serverTimestamp(),
+      invoiceValidatedBy: userId,
+      invoiceValidatedByName: actorName,
+    });
+    return;
+  }
+  const { error } = await supabase.rpc('register_sale_invoice', {
+    p_sale_id: saleId,
+    p_access_key: accessKey,
+    p_invoice_number: String(invoiceNumber).trim(),
+  });
+  if (error) throw error;
+}
+
+export async function cancelSaleInvoice(saleId, accessKey, invoiceNumber, userId, actorName) {
+  if (!isValidInvoiceAccessKey(accessKey)) {
+    throw new Error('A chave de acesso da NF de cancelamento deve conter exatamente 44 dígitos numéricos.');
+  }
+  if (!isInvoiceNumberProvided(String(invoiceNumber || ''))) {
+    throw new Error('Informe o número da NF de cancelamento.');
+  }
+  if (demoMode) {
+    const snapshot = await getDoc(doc(db, 'sales', saleId));
+    if (!snapshot.exists()) throw new Error('Venda não encontrada.');
+    const sale = { id: snapshot.id, ...snapshot.data() };
+    if (!isSaleInvoiceValidated(sale)) {
+      throw new Error('Somente uma NF validada pode ser cancelada.');
+    }
+    if (isSaleInvoiceCancelled(sale)) {
+      throw new Error('Esta NF já foi cancelada.');
+    }
+    await updateDoc(doc(db, 'sales', saleId), {
+      invoiceCancellationAccessKey: accessKey,
+      invoiceCancellationNumber: String(invoiceNumber).trim(),
+      invoiceCancelledAt: serverTimestamp(),
+      invoiceCancelledBy: userId,
+      invoiceCancelledByName: actorName,
+    });
+    return;
+  }
+  const { error } = await supabase.rpc('cancel_sale_invoice', {
+    p_sale_id: saleId,
+    p_access_key: accessKey,
+    p_invoice_number: String(invoiceNumber).trim(),
   });
   if (error) throw error;
 }

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   addDoc, adjustProductStock, approveQuote, authenticateDemo, collection, deleteDoc, deleteRejectedQuote, doc, finalizeQuoteSale, getDemoAdmin, getDoc,
   importStockBatch, isQuoteExpired, listChatContacts, listHistoryActors, listProfiles, onSnapshot, query, resetDemoData,
-  rejectQuote, sendChatMessage, where, writeBatch,
+  cancelSaleInvoice, registerSaleInvoice, rejectQuote, sendChatMessage, where, writeBatch,
   serverTimestamp, setDoc, updateDoc,
 } from './data.js';
 import {
@@ -15,6 +15,9 @@ import { db, demoMode, supabase, supabaseConfigured } from './supabase.js';
 import { parseErpStockFile, parseStockFile, planStockImport } from './stockImport.js';
 import { parseDreFile } from './dreImport.js';
 import { loadDreAttachment, removeDreAttachment, saveDreAttachment } from './dreAttachments.js';
+import {
+  isInvoiceNumberProvided, isSaleInvoiceCancelled, isSaleInvoiceValidated, isValidInvoiceAccessKey,
+} from './invoiceAccessKey.js';
 
 const screens = [
   { id: 'painel', label: 'Painel de gestão', icon: LayoutDashboard },
@@ -22,6 +25,7 @@ const screens = [
   { id: 'estoque', label: 'Controle de estoque', icon: Boxes },
   { id: 'orcamentos', label: 'Orçamentos', icon: FileText },
   { id: 'vendas', label: 'Vendas realizadas', icon: ShoppingCart },
+  { id: 'faturamento', label: 'Faturamento', icon: BadgeDollarSign },
   { id: 'despesas', label: 'Despesas e DRE', icon: CircleDollarSign },
   { id: 'historico', label: 'Histórico do sistema', icon: History },
   { id: 'chat', label: 'Chat da equipe', icon: MessageCircle },
@@ -214,7 +218,7 @@ function App() {
       watch(refs.products, setProducts, ['produtos', 'estoque', 'orcamentos', 'vendas', 'painel'].some(canSee)),
       watch(refs.expenses, setExpenses, canSee('produtos') || canSee('estoque') || canSee('orcamentos') || canSee('painel')),
       watch(refs.quotes, setQuotes, canSee('orcamentos') || canSee('painel') || canSee('historico')),
-      watch(refs.sales, setSales, canSee('vendas') || canSee('painel') || canSee('historico')),
+      watch(refs.sales, setSales, canSee('vendas') || canSee('faturamento') || canSee('painel') || canSee('historico')),
       watch(refs.stockMovements, setMovements, canSee('estoque') || canSee('painel') || canSee('historico')),
       watch(refs.profiles, setProfiles, profile.role === 'admin'),
       watch(refs.dreReports, setDreReports, canSee('despesas') || canSee('produtos') || canSee('painel')),
@@ -354,7 +358,7 @@ function App() {
   const sharedProps = { products, expenses, quotes, sales, movements, profiles, auditLogs, profile, user, onRun: run, dreReports, activeDreReport, activeDreReportId, unreadMessages, onlineUserIds };
   return <div className="app-shell">
     <aside className="sidebar">
-    
+
       <div className="nav-caption">MENU PRINCIPAL</div>
       <nav>{visibleScreens.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${screen === id ? 'selected' : ''}`} onClick={() => setScreen(id)}><Icon size={18} /><span>{label}</span>{id === 'orcamentos' && quotes.filter((quote) => quote.status !== 'effective').length > 0 && <span className="nav-count">{quotes.filter((quote) => quote.status !== 'effective').length}</span>}{id === 'chat' && unreadMessages.length > 0 && <span className="chat-nav-unread-dot" role="img" aria-label="Mensagens não lidas" title="Mensagens não lidas" />}</button>)}</nav>
       <div className="sidebar-bottom"><div className="user-chip"><div className="avatar">{(profile.name || user.email || 'U').charAt(0).toUpperCase()}</div><div className="user-details"><strong>{profile.name || user.email}</strong><small>{profile.role === 'admin' ? 'Administrador' : profile.role === 'analyst' ? 'Analista' : 'Usuário autorizado'}</small></div><button className="icon-button logout" title="Sair" onClick={logout}><LogOut size={17} /></button></div></div>
@@ -367,6 +371,7 @@ function App() {
         {screen === 'estoque' && <StockPage {...sharedProps} />}
         {screen === 'orcamentos' && <QuotesPage {...sharedProps} />}
         {screen === 'vendas' && <SalesPage {...sharedProps} />}
+        {screen === 'faturamento' && <BillingPage {...sharedProps} />}
         {screen === 'despesas' && <DreExpensesPage {...sharedProps} />}
         {screen === 'historico' && <HistoryPage {...sharedProps} />}
         {screen === 'chat' && <ChatPage {...sharedProps} />}
@@ -1507,6 +1512,155 @@ function QuotesPage({ products, expenses, quotes, profiles, onRun, user, profile
 function SalesPage({ sales }) {
   const total = sales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0);
   return <><div className="sales-summary"><div className="metric-icon green"><BadgeDollarSign size={20} /></div><div><span>Faturamento registrado</span><strong>{money(total)}</strong></div><div className="summary-divider" /><div><span>Vendas concluídas</span><strong>{sales.length}</strong></div></div><section className="panel table-panel"><div className="panel-heading"><div><h2>Histórico de vendas</h2><p className="muted">Somente vendas efetivamente concluídas a partir dos orçamentos.</p></div></div><SalesTable sales={sales.slice().sort((a, b) => timeValue(b.createdAt) - timeValue(a.createdAt))} empty="As vendas serão exibidas após efetivar um orçamento." /></section></>;
+}
+
+function BillingPage({ sales, onRun, user, profile }) {
+  const [invoiceSale, setInvoiceSale] = useState(null);
+  const [invoiceMode, setInvoiceMode] = useState('validate');
+  const [invoiceKey, setInvoiceKey] = useState('');
+  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [invoiceError, setInvoiceError] = useState('');
+  const [invoiceNotice, setInvoiceNotice] = useState('');
+  const total = sales.reduce((sum, sale) => sum + (Number(sale.total) || 0), 0);
+  const validatedSales = sales.filter((sale) => isSaleInvoiceValidated(sale) && !isSaleInvoiceCancelled(sale));
+  const pendingSales = sales.filter((sale) => !isSaleInvoiceValidated(sale) && !isSaleInvoiceCancelled(sale)).length;
+  const orderedSales = sales.slice().sort((a, b) => timeValue(b.createdAt || b.soldAt) - timeValue(a.createdAt || a.soldAt));
+  const validKey = isValidInvoiceAccessKey(invoiceKey);
+  const validInvoiceNumber = isInvoiceNumberProvided(invoiceNumber);
+
+  function openInvoice(sale, mode = 'validate') {
+    setInvoiceSale(sale);
+    setInvoiceMode(mode);
+    if (mode === 'cancel') {
+      setInvoiceKey(isSaleInvoiceCancelled(sale) ? sale.invoiceCancellationAccessKey || '' : '');
+      setInvoiceNumber(isSaleInvoiceCancelled(sale) ? String(sale.invoiceCancellationNumber || '') : '');
+    } else {
+      setInvoiceKey(sale.invoiceAccessKey || '');
+      setInvoiceNumber(String(sale.invoiceNumber || ''));
+    }
+    setInvoiceError('');
+    setInvoiceNotice('');
+  }
+
+  function closeInvoice() {
+    setInvoiceSale(null);
+    setInvoiceMode('validate');
+    setInvoiceKey('');
+    setInvoiceNumber('');
+    setInvoiceError('');
+    setInvoiceNotice('');
+  }
+
+  function updateInvoiceKey(value) {
+    setInvoiceKey(value.replace(/\D/g, ''));
+    setInvoiceError('');
+    setInvoiceNotice('');
+  }
+
+  async function consultSefaz() {
+    if (!validKey) {
+      setInvoiceError('Informe uma chave de acesso com exatamente 44 dígitos.');
+      return;
+    }
+    const portal = window.open('https://sat.sef.sc.gov.br/tax.NET/Sat.NFe.Web/Consultas/ConsultaPublicaNFe.aspx?amb=PROD', '_blank');
+    if (!portal) {
+      setInvoiceError('Não foi possível abrir o portal. Permita pop-ups para consultar a SEF/SC.');
+      return;
+    }
+    portal.opener = null;
+    setInvoiceError('');
+    try {
+      await navigator.clipboard.writeText(invoiceKey);
+      setInvoiceNotice('Consulta pública aberta em outra aba. A chave foi copiada para informar no portal.');
+    } catch {
+      setInvoiceNotice('Consulta pública aberta em outra aba. Copie a chave acima e informe-a no portal.');
+    }
+  }
+
+  async function saveInvoice(event) {
+    event.preventDefault();
+    const cancelling = invoiceMode === 'cancel';
+    if (!validKey) {
+      setInvoiceError(`Informe uma chave de acesso${cancelling ? ' da NF de cancelamento' : ''} com exatamente 44 dígitos.`);
+      return;
+    }
+    if (!validInvoiceNumber) {
+      setInvoiceError(`Informe o número ${cancelling ? 'da NF de cancelamento' : 'da nota fiscal'}.`);
+      return;
+    }
+    if (cancelling && (!isSaleInvoiceValidated(invoiceSale) || isSaleInvoiceCancelled(invoiceSale))) {
+      setInvoiceError('Somente uma NF validada e ainda não cancelada pode ser cancelada.');
+      return;
+    }
+    const action = cancelling
+      ? () => cancelSaleInvoice(invoiceSale.id, invoiceKey, String(invoiceNumber || '').trim(), user.uid, profile.name || user.email)
+      : () => registerSaleInvoice(invoiceSale.id, invoiceKey, String(invoiceNumber || '').trim(), user.uid, profile.name || user.email);
+    const saved = await onRun(
+      action,
+      setInvoiceError,
+      {
+        action: cancelling ? 'cancel' : 'validate',
+        entity: 'sale',
+        entityId: invoiceSale.id,
+        sourceScreen: 'faturamento',
+        summary: cancelling
+          ? `Registrou o cancelamento da NF ${String(invoiceNumber || '').trim()} da venda de ${invoiceSale.customer || invoiceSale.productName} (chave final ${invoiceKey.slice(-4)}).`
+          : `Registrou a NF ${String(invoiceNumber || '').trim()} para a venda de ${invoiceSale.customer || invoiceSale.productName} (chave final ${invoiceKey.slice(-4)}).`,
+      },
+    );
+    if (saved) closeInvoice();
+  }
+
+  return <>
+    <div className="welcome-row"><div><h2>Notas fiscais das vendas</h2><p className="muted">Vendas registradas a partir de orçamentos concluídos.</p></div></div>
+    <div className="metric-grid billing-metric-grid">
+      <article className="metric-card"><div className="metric-icon green"><BadgeDollarSign size={19} /></div><p>Faturamento total</p><strong>{money(total)}</strong><small>{sales.length} vendas registradas</small></article>
+      <article className="metric-card"><div className="metric-icon blue"><FileText size={19} /></div><p>Notas validadas</p><strong>{validatedSales.length}</strong><small>Com chave de acesso registrada</small></article>
+      <article className="metric-card"><div className="metric-icon amber"><ClipboardList size={19} /></div><p>Pendentes de NF</p><strong>{pendingSales}</strong><small>Vendas sem validação registrada</small></article>
+    </div>
+    <section className="panel table-panel"><div className="panel-heading"><div><h2>Vendas para faturamento</h2><p className="muted">Informe a chave da nota emitida e confirme sua autorização no portal oficial da SEF/SC.</p></div></div>
+      <div className="table-wrap"><table><thead><tr><th>Produto</th><th>Cliente</th><th>Data da venda</th><th>Total</th><th>Nº NF</th><th>Nota fiscal</th><th>Ação</th></tr></thead><tbody>
+        {orderedSales.map((sale) => {
+          const validated = isSaleInvoiceValidated(sale);
+          const cancelled = isSaleInvoiceCancelled(sale);
+          return <tr key={sale.id}>
+            <td><strong>{sale.productName}</strong></td>
+            <td>{sale.customer || '—'}</td>
+            <td>{dateLabel(sale.createdAt || sale.soldAt)}</td>
+            <td><strong>{money(sale.total)}</strong></td>
+            <td><strong>{sale.invoiceNumber || '—'}</strong>{cancelled && <small className="table-sub">Cancelamento: {sale.invoiceCancellationNumber}</small>}</td>
+            <td>{cancelled
+              ? <span className="below-tag invoice-status">NF cancelada</span>
+              : validated
+              ? <span className="regular-tag invoice-status"><Check size={13} /> NF validada</span>
+              : <span className="below-tag invoice-status">Pendente</span>}</td>
+            <td><div className="button-group invoice-row-actions">
+              <button className="secondary-button" onClick={() => openInvoice(sale)} disabled={validated || cancelled}><FileText size={15} /> Validar NF</button>
+              {validated && !cancelled && <button className="secondary-button" onClick={() => openInvoice(sale, 'cancel')}><Ban size={14} /> Cancelar NF</button>}
+              {cancelled && <span className="below-tag">Encerrada</span>}
+            </div></td>
+          </tr>;
+        })}
+      </tbody></table>{!sales.length && <div className="empty-state"><ShoppingCart size={26} /><p>As vendas concluídas dos orçamentos aparecerão aqui.</p></div>}</div>
+    </section>
+    {invoiceSale && <Modal title={invoiceMode === 'cancel' ? 'Cancelar NF validada' : 'Validar NF'} onClose={closeInvoice} className="invoice-modal">
+      <form className="modal-form" onSubmit={saveInvoice}>
+        <div className="quote-info"><FileText size={18} /><span><strong>{invoiceSale.customer || invoiceSale.productName}</strong> · {invoiceSale.productName} · {money(invoiceSale.total)}.{invoiceMode === 'cancel' ? ` Informe o número e a chave de acesso da NF de cancelamento (NF original nº ${invoiceSale.invoiceNumber || '—'}).` : ''}</span></div>
+        <Field label={invoiceMode === 'cancel' ? 'Número da nota de cancelamento' : 'Número da nota fiscal'}>
+          <input value={invoiceNumber} onChange={(event) => { setInvoiceNumber(event.currentTarget.value); setInvoiceError(''); }} required autoComplete="off" inputMode="numeric" placeholder={invoiceMode === 'cancel' ? 'Informe o número da NF de cancelamento' : 'Informe o número da NF'} />
+        </Field>
+        <Field label={`Chave de acesso da NF-e${invoiceMode === 'cancel' ? ' de cancelamento' : ''} (44 dígitos)`}>
+          <input className="invoice-key-input" value={invoiceKey} onChange={(event) => updateInvoiceKey(event.currentTarget.value)} inputMode="numeric" autoComplete="off" placeholder="Digite ou cole a chave de acesso" aria-describedby="invoice-key-hint" aria-invalid={Boolean(invoiceKey) && !validKey} />
+        </Field>
+        <p id="invoice-key-hint" className={`invoice-key-hint ${invoiceKey && !validKey ? 'error-text' : 'muted'}`}>{invoiceKey.length}/44 dígitos{invoiceKey && !validKey ? ' · a chave deve conter exatamente 44 dígitos numéricos.' : ''}</p>
+        <div className="invoice-consultation-note"><ShieldCheck size={17} /><span>A consulta pública será aberta em outra aba. O registro fica disponível quando a chave tiver 44 dígitos e o número da nota estiver informado.</span></div>
+        {invoiceError && <p className="error-text" role="alert">{invoiceError}</p>}
+        {invoiceNotice && <p className="success-text" role="status">{invoiceNotice}</p>}
+        <button type="button" className="secondary-button invoice-consult-button" onClick={consultSefaz} disabled={!validKey}><ShieldCheck size={16} /> Consultar chave na SEF/SC</button>
+        <div className="modal-actions"><button type="button" className="secondary-button" onClick={closeInvoice}>Fechar</button><button className="primary-button" disabled={!validKey || !validInvoiceNumber}><Check size={16} /> {invoiceMode === 'cancel' ? 'Cancelar NF validada' : 'Registrar NF validada'}</button></div>
+      </form>
+    </Modal>}
+  </>;
 }
 
 function ProfilesPage({ profiles, onRun, user, profile }) {
